@@ -22,8 +22,6 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Fixed synthetic project/container names keep this drill isolated from the live
-# NAS runtime. Refuse suspicious project names rather than risking a shared stack.
 case "$PROJECT" in
   family-finance-synthetic-e2e|family-finance-synthetic-e2e-*) : ;;
   *) echo 'SYNTHETIC_E2E_PROJECT must start with family-finance-synthetic-e2e' >&2; exit 2 ;;
@@ -74,23 +72,34 @@ for i in $(seq 1 30); do
   sleep 2
 done
 
-docker exec -i "$FINANCE_MCP_CONTAINER" python - <<'PY'
+if ! docker exec -i "$FINANCE_MCP_CONTAINER" python - <<'PY'
 import asyncio
 from mcp import Client
+
+
+def rows(result):
+    assert not result.is_error, result.content
+    assert result.structured_content is not None, result.content
+    return result.structured_content['rows']
+
 
 async def main():
     async with Client('http://127.0.0.1:8000/mcp') as client:
         tools = await client.list_tools()
         assert len(tools.tools) == 7
-        snap = await client.call_tool('financial_snapshot', {'household_label':'synthetic_household','currency':'KRW'})
-        assert snap.structured_content['rows'][0]['net_worth'] == '18000000.00'
-        reserve = await client.call_tool('emergency_reserve', {'household_label':'synthetic_household','currency':'KRW'})
-        assert reserve.structured_content['rows'][0]['coverage_months'] == '100.00'
-        scenarios = await client.call_tool('scenario_outcomes', {'household_label':'synthetic_household','currency':'KRW'})
-        assert scenarios.structured_content['rows'][0]['annual_net_after_modeled_costs'] == '60520000.00'
+        snap = rows(await client.call_tool('financial_snapshot', {'household_label':'synthetic_household','currency':'KRW'}))
+        assert snap[0]['net_worth'] == '18000000.00'
+        reserve = rows(await client.call_tool('emergency_reserve', {'household_label':'synthetic_household','currency':'KRW'}))
+        assert reserve[0]['coverage_months'] == '100.00'
+        scenarios = rows(await client.call_tool('scenario_outcomes', {'household_label':'synthetic_household','currency':'KRW'}))
+        assert scenarios[0]['annual_net_after_modeled_costs'] == '60520000.00'
 
 asyncio.run(main())
 PY
+then
+  docker logs "$FINANCE_MCP_CONTAINER" 2>&1 | grep -E 'mcp_tool_(complete|failed)|ERROR|Traceback' || true
+  exit 6
+fi
 
 migration_count="$(docker exec "$FINANCE_DB_CONTAINER" psql -qAt -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" -c 'SELECT COUNT(*) FROM meta.schema_migrations;')"
 [ "$migration_count" -ge 8 ] || { echo "unexpected migration count: $migration_count" >&2; exit 5; }
