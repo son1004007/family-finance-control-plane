@@ -1,0 +1,5 @@
+transaction_ref,occurred_at,booked_on,amount,description,counterparty,category
+SYN-001,2026-02-01 09:00:00,2026-02-01,4200000,Synthetic salary,Synthetic employer,income
+SYN-002,2026-02-02 12:10:00,2026-02-02,-1200000,Synthetic housing payment,Synthetic housing,housing
+SYN-003,2026-02-03 18:30:00,2026-02-03,-350000,Synthetic groceries,Synthetic market,living
+SYN-004,not-a-date,2026-02-04,-10000,Synthetic malformed row,Synthetic source,error
