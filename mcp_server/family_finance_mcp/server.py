@@ -128,9 +128,10 @@ async def _query(tool: str, sql: str, params: tuple[Any, ...] = ()) -> RowsResul
 
 mcp = MCPServer(
     SERVER_NAME,
-    version="1.0.0",
+    version="1.1.0",
     instructions=(
         "Read-only household-finance tools backed by deterministic PostgreSQL views. "
+        "Use data_freshness before interpreting changing metrics when recency matters. "
         "Do not infer missing values as zero. No arbitrary SQL or mutation tools are exposed."
     ),
 )
@@ -299,6 +300,44 @@ async def scenario_outcomes(household_label: str, currency: str | None = None, l
         LIMIT %s
         """,
         (household_label, currency, currency, min(MAX_ROWS + 1, limit + 1)),
+    )
+
+
+@mcp.tool(title="Get collection freshness", annotations=READ_ONLY)
+async def data_freshness(household_label: str) -> RowsResult:
+    """Return source-by-source collection freshness so AI can distinguish current from stale evidence."""
+    return await _query(
+        "data_freshness",
+        """
+        SELECT source_key, source_type, display_label, authority_level,
+               cadence_seconds, freshness_sla_seconds, last_attempt_at,
+               last_success_at, age_seconds, freshness_status, last_error_type
+        FROM analytics.v_collection_source_freshness
+        WHERE household_label = %s
+        ORDER BY source_key
+        LIMIT %s
+        """,
+        (household_label, MAX_ROWS + 1),
+    )
+
+
+@mcp.tool(title="Get latest household changes", annotations=READ_ONLY)
+async def change_summary(household_label: str, currency: str | None = None) -> RowsResult:
+    """Return latest net-worth and cash-flow changes for continuous trend analysis."""
+    return await _query(
+        "change_summary",
+        """
+        SELECT c.currency, c.latest_net_worth_month, c.net_worth,
+               c.net_worth_change, c.latest_cash_flow_month, c.net_cash_flow,
+               c.previous_month_net_cash_flow, c.net_cash_flow_change
+        FROM analytics.v_household_change_summary_by_currency c
+        JOIN analytics.v_household_directory d USING (household_id)
+        WHERE d.household_label = %s
+          AND (%s::text IS NULL OR c.currency::text = %s::text)
+        ORDER BY c.currency
+        LIMIT %s
+        """,
+        (household_label, currency, currency, MAX_ROWS + 1),
     )
 
 
