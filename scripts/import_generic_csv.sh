@@ -17,9 +17,7 @@ ORIGINAL_FILENAME="${GENERIC_IMPORT_ORIGINAL_FILENAME:-$(basename "$CSV_INPUT")}
 NORMALIZER_VERSION="${GENERIC_IMPORT_NORMALIZER_VERSION:-generic_csv_v2}"
 
 abs_file() {
-  input="$1"
-  dir="$(dirname "$input")"
-  base="$(basename "$input")"
+  input="$1"; dir="$(dirname "$input")"; base="$(basename "$input")"
   (cd "$dir" >/dev/null 2>&1 && printf '%s/%s\n' "$(pwd -P)" "$base")
 }
 
@@ -37,11 +35,10 @@ IMPORTER_DIR="$REPO_ROOT/importers/generic_csv"
 find_docker() {
   if command -v docker >/dev/null 2>&1; then command -v docker; return 0; fi
   for candidate in /usr/local/bin/docker /usr/bin/docker /var/packages/ContainerManager/target/usr/bin/docker /var/packages/Docker/target/usr/bin/docker; do
-    if [ -x "$candidate" ]; then printf '%s\n' "$candidate"; return 0; fi
+    [ -x "$candidate" ] && { printf '%s\n' "$candidate"; return 0; }
   done
   return 1
 }
-
 DOCKER_BIN="${DOCKER_BIN:-$(find_docker || true)}"
 [ -n "$DOCKER_BIN" ] || { echo 'Docker CLI not found' >&2; exit 5; }
 USE_SUDO=0
@@ -49,7 +46,6 @@ if "$DOCKER_BIN" info >/dev/null 2>&1; then :
 elif command -v sudo >/dev/null 2>&1 && sudo -n "$DOCKER_BIN" info >/dev/null 2>&1; then USE_SUDO=1
 else echo 'Docker is not available non-interactively' >&2; exit 6
 fi
-
 docker_cmd() { if [ "$USE_SUDO" -eq 1 ]; then sudo -n "$DOCKER_BIN" "$@"; else "$DOCKER_BIN" "$@"; fi; }
 
 sha256_file() {
@@ -68,6 +64,7 @@ case "$FILE_SHA$MAPPING_SHA" in *[!0-9a-fA-F]*) echo 'Invalid SHA-256 output' >&
 EXISTING="$(docker_cmd exec "$CONTAINER_NAME" psql -At -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" -c "SELECT status FROM ingest.import_batches WHERE source_type='$SOURCE_TYPE' AND file_sha256='$FILE_SHA' AND mapping_sha256='$MAPPING_SHA' ORDER BY import_batch_id DESC LIMIT 1;" 2>/dev/null || true)"
 if [ "$EXISTING" = 'completed' ]; then
   echo "IMPORT_ALREADY_APPLIED=PASS source_type=$SOURCE_TYPE file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
+  [ "$SOURCE_TYPE" = generic_csv ] && echo "GENERIC_CSV_IMPORT=PASS file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
   exit 0
 fi
 
@@ -83,9 +80,7 @@ docker_cmd run --rm \
   "$PYTHON_IMAGE" \
   python /app/importer/emit_copy_sql_v2.py \
   /input.csv /mapping.json "$FILE_SHA" "$MAPPING_SHA" \
-  --source-type "$SOURCE_TYPE" \
-  --original-filename "$ORIGINAL_FILENAME" \
-  --normalizer-version "$NORMALIZER_VERSION" > "$TMP_SQL"
+  --source-type "$SOURCE_TYPE" --original-filename "$ORIGINAL_FILENAME" --normalizer-version "$NORMALIZER_VERSION" > "$TMP_SQL"
 
 [ -s "$TMP_SQL" ] || { echo 'Normalizer produced no SQL' >&2; exit 9; }
 OUTPUT="$(docker_cmd exec -i "$CONTAINER_NAME" psql -At -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" < "$TMP_SQL")"
@@ -96,3 +91,4 @@ if printf '%s\n' "$OUTPUT" | grep -q '^IMPORT_BATCH=FAIL '; then
 fi
 printf '%s\n' "$OUTPUT" | grep -q '^IMPORT_BATCH=PASS ' || { echo 'Import completion marker missing' >&2; exit 11; }
 echo "GENERIC_IMPORT=PASS source_type=$SOURCE_TYPE file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
+[ "$SOURCE_TYPE" = generic_csv ] && echo "GENERIC_CSV_IMPORT=PASS file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
