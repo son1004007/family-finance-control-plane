@@ -1,0 +1,29 @@
+name: family-finance-control-plane
+
+services:
+  db:
+    image: postgres:16.15-alpine
+    container_name: ${FINANCE_DB_CONTAINER:-family-finance-postgres}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-family_finance}
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-finance_admin}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?POSTGRES_ADMIN_PASSWORD must be set}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    volumes:
+      - finance_postgres_data:/var/lib/postgresql/data
+    networks:
+      - finance_internal
+
+volumes:
+  finance_postgres_data:
+
+networks:
+  finance_internal:
+    internal: true

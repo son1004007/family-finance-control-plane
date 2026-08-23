@@ -1,0 +1,109 @@
+name: Database CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  postgres-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      POSTGRES_DB: family_finance
+      POSTGRES_ADMIN_USER: finance_admin
+      POSTGRES_ADMIN_PASSWORD: ci-only-not-a-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start PostgreSQL 16
+        run: |
+          set -euo pipefail
+          docker compose up -d db
+          for i in $(seq 1 30); do
+            if docker compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs db
+          exit 1
+
+      - name: Apply migrations
+        run: sh scripts/migrate_compose.sh
+
+      - name: Re-run migrations to prove idempotent runner
+        run: |
+          set -euo pipefail
+          output="$(sh scripts/migrate_compose.sh)"
+          printf '%s\n' "$output"
+          test "$(printf '%s\n' "$output" | grep -c '^SKIP ')" -eq 3
+
+      - name: Load synthetic fixture
+        run: |
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/fixtures/synthetic_household.sql
+
+      - name: Verify deterministic analytics
+        run: |
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/tests/assert_synthetic.sql
+
+      - name: Verify AI reader can query
+        run: |
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "SET ROLE finance_ai_reader; SELECT COUNT(*) FROM analytics.v_monthly_cash_flow;"
+
+      - name: Verify AI reader cannot mutate
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+              -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_ai_reader; INSERT INTO planning.goals(household_id, goal_type, label) SELECT household_id, 'forbidden', 'must_not_insert' FROM finance.households LIMIT 1;"; then
+            echo '::error::finance_ai_reader unexpectedly mutated data'
+            exit 1
+          fi
+          echo 'AI_READER_MUTATION_DENIED=PASS'
+
+      - name: Verify controlled writer is planning-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "SET ROLE finance_ai_writer; INSERT INTO planning.goals(household_id, goal_type, label) SELECT household_id, 'test', 'writer_allowed_planning' FROM finance.households LIMIT 1;"
+
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+              -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_ai_writer; INSERT INTO finance.accounts(household_id, account_type, account_label) SELECT household_id, 'test', 'writer_must_not_touch_ledger' FROM finance.households LIMIT 1;"; then
+            echo '::error::finance_ai_writer unexpectedly mutated finance ledger'
+            exit 1
+          fi
+          echo 'AI_WRITER_PLANNING_BOUNDARY=PASS'
+
+      - name: Verify logical backup and isolated restore
+        run: |
+          set -euo pipefail
+          output="$(BACKUP_DIR="$RUNNER_TEMP/family-finance-backups" sh scripts/backup_postgres_compose.sh)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -q '^POSTGRES_BACKUP_RESTORE=PASS$'
+
+      - name: Show database version
+        run: |
+          docker compose exec -T db psql -At \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "SELECT version();"
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
