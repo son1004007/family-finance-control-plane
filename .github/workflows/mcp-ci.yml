@@ -1,0 +1,181 @@
+name: MCP CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  mcp-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      POSTGRES_DB: family_finance
+      POSTGRES_ADMIN_USER: finance_admin
+      POSTGRES_ADMIN_PASSWORD: mcp-ci-only
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate sources and boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n scripts/provision_mcp_reader_login.sh
+          python3 -m py_compile mcp_server/family_finance_mcp/server.py
+          grep -q '^mcp==2.0.0$' mcp_server/requirements.txt
+          grep -q '^psycopg\[binary\]==3.3.4$' mcp_server/requirements.txt
+          if grep -Eq '@mcp\.tool.*sql|def .*sql|execute_sql|query_sql' mcp_server/family_finance_mcp/server.py; then
+            echo '::error::arbitrary SQL-like MCP tool detected'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import yaml
+          with open('compose.mcp.yaml', encoding='utf-8') as f:
+              cfg=yaml.safe_load(f)
+          mcp=cfg['services']['mcp']
+          assert not mcp.get('ports'), 'MCP must not publish a host port'
+          assert mcp.get('read_only') is True
+          assert 'ALL' in mcp.get('cap_drop', [])
+          print('MCP_COMPOSE_BOUNDARY=PASS')
+          PY
+
+      - name: Start PostgreSQL and migrate
+        run: |
+          set -euo pipefail
+          docker compose up -d db
+          for i in $(seq 1 30); do
+            docker compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null 2>&1 && break
+            sleep 2
+          done
+          sh scripts/migrate_compose.sh
+
+      - name: Load fictional MCP fixture
+        run: |
+          set -euo pipefail
+          for f in db/fixtures/synthetic_household.sql db/fixtures/synthetic_metrics.sql db/fixtures/synthetic_history.sql db/fixtures/synthetic_scenarios.sql; do
+            docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" < "$f"
+          done
+
+      - name: Provision narrow MCP login
+        shell: bash
+        run: |
+          set -euo pipefail
+          FINANCE_MCP_SECRET_FILE="$RUNNER_TEMP/mcp-reader.env" sh scripts/provision_mcp_reader_login.sh
+          test "$(stat -c '%a' "$RUNNER_TEMP/mcp-reader.env")" = 600
+          echo "MCP_SECRET_FILE=$RUNNER_TEMP/mcp-reader.env" >> "$GITHUB_ENV"
+
+      - name: Build and start internal MCP
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . "$MCP_SECRET_FILE"
+          set +a
+          docker compose -f compose.yaml -f compose.mcp.yaml up -d --build mcp
+          for i in $(seq 1 30); do
+            status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' family-finance-mcp 2>/dev/null || true)"
+            [ "$status" = healthy ] && exit 0
+            sleep 2
+          done
+          docker logs family-finance-mcp
+          exit 1
+
+      - name: Verify actual Streamable HTTP tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose -f compose.yaml -f compose.mcp.yaml exec -T mcp python - <<'PY'
+          import asyncio
+          from mcp import Client
+
+          EXPECTED = {
+              'list_households', 'financial_snapshot', 'cash_flow',
+              'spending_summary', 'net_worth_history', 'emergency_reserve',
+              'scenario_outcomes',
+          }
+
+          async def main():
+              async with Client('http://127.0.0.1:8000/mcp') as client:
+                  listed = await client.list_tools()
+                  names = {tool.name for tool in listed.tools}
+                  assert names == EXPECTED, names
+                  assert all(tool.annotations and tool.annotations.read_only_hint is True for tool in listed.tools)
+
+                  result = await client.call_tool('financial_snapshot', {'household_label':'synthetic_household','currency':'KRW'})
+                  assert not result.is_error, result
+                  row = result.structured_content['rows'][0]
+                  assert row['net_worth'] == '18000000.00', row
+                  assert row['liquid_reserve'] == '30000000.00', row
+
+                  result = await client.call_tool('cash_flow', {'household_label':'synthetic_household','months':12,'currency':'KRW'})
+                  row = result.structured_content['rows'][0]
+                  assert row['net_cash_flow'] == '2350000.00', row
+
+                  result = await client.call_tool('spending_summary', {'household_label':'synthetic_household','months':3,'currency':'KRW'})
+                  rows = result.structured_content['rows']
+                  assert rows[0]['category'] == 'housing' and rows[0]['spending'] == '1500000.00', rows
+
+                  result = await client.call_tool('net_worth_history', {'household_label':'synthetic_household','months':12,'currency':'KRW'})
+                  rows = result.structured_content['rows']
+                  assert rows[-1]['net_worth'] == '18000000.00' and rows[-1]['net_worth_change'] == '3000000.00', rows
+
+                  result = await client.call_tool('emergency_reserve', {'household_label':'synthetic_household','currency':'KRW'})
+                  row = result.structured_content['rows'][0]
+                  assert row['coverage_months'] == '100.00' and row['coverage_status'] == 'calculated', row
+
+                  result = await client.call_tool('scenario_outcomes', {'household_label':'synthetic_household','currency':'KRW'})
+                  row = result.structured_content['rows'][0]
+                  assert row['annual_net_after_modeled_costs'] == '60520000.00', row
+                  assert row['projected_liquid_reserve_after_housing'] == '-70000000.00', row
+
+                  invalid = await client.call_tool('does_not_exist', {})
+                  assert invalid.is_error is True
+
+          asyncio.run(main())
+          print('MCP_STREAMABLE_HTTP_CONTRACT=PASS')
+          PY
+
+      - name: Verify MCP login cannot read raw tables or mutate
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . "$MCP_SECRET_FILE"
+          set +a
+          docker compose exec -T -e PGPASSWORD="$FINANCE_MCP_DB_PASSWORD" db \
+            psql -h 127.0.0.1 -qAt -v ON_ERROR_STOP=1 -U "$FINANCE_MCP_DB_USER" -d "$POSTGRES_DB" \
+            -c "SELECT COUNT(*) FROM analytics.v_household_directory;" >/dev/null
+          if docker compose exec -T -e PGPASSWORD="$FINANCE_MCP_DB_PASSWORD" db \
+              psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -U "$FINANCE_MCP_DB_USER" -d "$POSTGRES_DB" \
+              -c "SELECT COUNT(*) FROM finance.transactions;"; then
+            echo '::error::MCP login unexpectedly read raw transactions'
+            exit 1
+          fi
+          if docker compose exec -T -e PGPASSWORD="$FINANCE_MCP_DB_PASSWORD" db \
+              psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -U "$FINANCE_MCP_DB_USER" -d "$POSTGRES_DB" \
+              -c "INSERT INTO planning.goals(household_id,goal_type,label) SELECT household_id,'forbidden','forbidden' FROM finance.households LIMIT 1;"; then
+            echo '::error::MCP login unexpectedly mutated data'
+            exit 1
+          fi
+          echo 'MCP_DATABASE_BOUNDARY=PASS'
+
+      - name: Ensure logs contain no known synthetic sensitive payload text
+        shell: bash
+        run: |
+          set -euo pipefail
+          logs="$(docker logs family-finance-mcp 2>&1)"
+          if printf '%s\n' "$logs" | grep -Eq 'Synthetic salary|Synthetic employer|synthetic housing cost'; then
+            echo '::error::MCP logs contain financial payload text'
+            exit 1
+          fi
+          printf '%s\n' "$logs" | grep -q 'mcp_tool_complete'
+          echo 'MCP_METADATA_ONLY_LOGGING=PASS'
+
+      - name: Cleanup
+        if: always()
+        run: docker compose -f compose.yaml -f compose.mcp.yaml down -v --remove-orphans || true
