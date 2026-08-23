@@ -35,8 +35,12 @@ def _matches(pattern: str | None, value: str) -> bool:
     return pattern is None or re.search(pattern, value) is not None
 
 
+def _sender_address(sender: str) -> str:
+    return parseaddr(sender)[1].strip().lower()
+
+
 def _sender_domain(sender: str) -> str | None:
-    address = parseaddr(sender)[1].strip().lower()
+    address = _sender_address(sender)
     if "@" not in address:
         return None
     return address.rsplit("@", 1)[1]
@@ -64,8 +68,9 @@ def classify(envelope: MailEnvelope, rules: tuple[MailRule, ...]) -> list[Observ
     """Classify one message without returning/storing its raw subject or snippet."""
     observations: list[Observation] = []
     searchable = f"{envelope.subject}\n{envelope.snippet}"
+    sender_address = _sender_address(envelope.sender)
     for rule in rules:
-        if not _matches(rule.from_regex, envelope.sender):
+        if not _matches(rule.from_regex, sender_address):
             continue
         if not _matches(rule.subject_regex, envelope.subject):
             continue
