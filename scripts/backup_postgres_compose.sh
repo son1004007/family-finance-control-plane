@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
 set -eu
 
-COMPOSE_FILE="${COMPOSE_FILE:-compose.yaml}"
 POSTGRES_DB="${POSTGRES_DB:-family_finance}"
 POSTGRES_ADMIN_USER="${POSTGRES_ADMIN_USER:-finance_admin}"
+CONTAINER_NAME="${FINANCE_DB_CONTAINER:-family-finance-postgres}"
 BACKUP_DIR="${BACKUP_DIR:-.local/backups/postgres}"
 BACKUP_KEEP="${BACKUP_KEEP:-14}"
 
@@ -28,10 +28,6 @@ docker_cmd() {
   fi
 }
 
-compose() {
-  docker_cmd compose -f "$COMPOSE_FILE" "$@"
-}
-
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 BACKUP_FILE="$BACKUP_DIR/family_finance.$STAMP.dump"
@@ -44,15 +40,18 @@ cleanup() {
   trap - EXIT INT TERM
   rm -f "$TMP_FILE" 2>/dev/null || true
   if [ "$VERIFY_CREATED" -eq 1 ]; then
-    compose exec -T db dropdb --if-exists -U "$POSTGRES_ADMIN_USER" "$VERIFY_DB" >/dev/null 2>&1 || true
+    docker_cmd exec "$CONTAINER_NAME" dropdb --if-exists -U "$POSTGRES_ADMIN_USER" "$VERIFY_DB" >/dev/null 2>&1 || true
   fi
   exit "$rc"
 }
 trap cleanup EXIT INT TERM
 
-compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null
+if ! docker_cmd exec "$CONTAINER_NAME" pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB"; then
+  echo 'PostgreSQL readiness check failed before backup' >&2
+  exit 6
+fi
 
-compose exec -T db pg_dump \
+docker_cmd exec "$CONTAINER_NAME" pg_dump \
   -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
   --format=custom --no-owner --no-privileges > "$TMP_FILE"
 
@@ -63,7 +62,7 @@ chmod 600 "$BACKUP_FILE" 2>/dev/null || true
 count_table() {
   db="$1"
   table="$2"
-  compose exec -T db psql -At -v ON_ERROR_STOP=1 \
+  docker_cmd exec "$CONTAINER_NAME" psql -qAt -v ON_ERROR_STOP=1 \
     -U "$POSTGRES_ADMIN_USER" -d "$db" -c "SELECT COUNT(*) FROM $table;"
 }
 
@@ -73,12 +72,12 @@ PROD_TRANSACTIONS="$(count_table "$POSTGRES_DB" finance.transactions)"
 PROD_ASSETS="$(count_table "$POSTGRES_DB" finance.asset_snapshots)"
 PROD_LIABILITIES="$(count_table "$POSTGRES_DB" finance.liability_snapshots)"
 
-compose exec -T db createdb -U "$POSTGRES_ADMIN_USER" "$VERIFY_DB"
+docker_cmd exec "$CONTAINER_NAME" createdb -U "$POSTGRES_ADMIN_USER" "$VERIFY_DB"
 VERIFY_CREATED=1
 
-cat "$BACKUP_FILE" | compose exec -T db pg_restore \
+docker_cmd exec -i "$CONTAINER_NAME" pg_restore \
   -U "$POSTGRES_ADMIN_USER" -d "$VERIFY_DB" \
-  --no-owner --no-privileges --exit-on-error
+  --no-owner --no-privileges --exit-on-error < "$BACKUP_FILE"
 
 [ "$(count_table "$VERIFY_DB" meta.schema_migrations)" = "$PROD_MIGRATIONS" ] || { echo 'migration count mismatch after restore' >&2; exit 20; }
 [ "$(count_table "$VERIFY_DB" finance.accounts)" = "$PROD_ACCOUNTS" ] || { echo 'account count mismatch after restore' >&2; exit 21; }
@@ -86,7 +85,7 @@ cat "$BACKUP_FILE" | compose exec -T db pg_restore \
 [ "$(count_table "$VERIFY_DB" finance.asset_snapshots)" = "$PROD_ASSETS" ] || { echo 'asset count mismatch after restore' >&2; exit 23; }
 [ "$(count_table "$VERIFY_DB" finance.liability_snapshots)" = "$PROD_LIABILITIES" ] || { echo 'liability count mismatch after restore' >&2; exit 24; }
 
-compose exec -T db dropdb -U "$POSTGRES_ADMIN_USER" "$VERIFY_DB"
+docker_cmd exec "$CONTAINER_NAME" dropdb -U "$POSTGRES_ADMIN_USER" "$VERIFY_DB"
 VERIFY_CREATED=0
 
 ls -1t "$BACKUP_DIR"/family_finance.*.dump 2>/dev/null | awk -v keep="$BACKUP_KEEP" 'NR>keep' | while IFS= read -r old; do
