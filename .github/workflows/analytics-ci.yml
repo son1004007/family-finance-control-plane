@@ -1,0 +1,64 @@
+name: Analytics CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analytics-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      POSTGRES_DB: family_finance
+      POSTGRES_ADMIN_USER: finance_admin
+      POSTGRES_ADMIN_PASSWORD: analytics-ci-only
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start PostgreSQL and apply migrations
+        run: |
+          set -euo pipefail
+          docker compose up -d db
+          for i in $(seq 1 30); do
+            docker compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null 2>&1 && break
+            sleep 2
+          done
+          sh scripts/migrate_compose.sh
+
+      - name: Load fictional history fixtures
+        run: |
+          set -euo pipefail
+          for f in db/fixtures/synthetic_household.sql db/fixtures/synthetic_metrics.sql db/fixtures/synthetic_history.sql; do
+            docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" < "$f"
+          done
+
+      - name: Verify historical metrics
+        run: |
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" < db/tests/assert_extended_metrics.sql
+          echo 'EXTENDED_ANALYTICS=PASS'
+
+      - name: Verify MCP role cannot read raw ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_mcp_reader; SELECT COUNT(*) FROM finance.transactions;"; then
+            echo '::error::finance_mcp_reader unexpectedly read raw transactions'
+            exit 1
+          fi
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_mcp_reader; INSERT INTO planning.goals(household_id,goal_type,label) SELECT household_id,'forbidden','forbidden' FROM finance.households LIMIT 1;"; then
+            echo '::error::finance_mcp_reader unexpectedly wrote planning data'
+            exit 1
+          fi
+          echo 'MCP_CURATED_BOUNDARY=PASS'
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v

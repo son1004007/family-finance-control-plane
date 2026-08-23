@@ -1,0 +1,38 @@
+{
+  "format_version": 1,
+  "source_name": "synthetic_bank_xlsx",
+  "household_label": "synthetic_xlsx_household",
+  "account_label": "synthetic_xlsx_checking",
+  "account_type": "checking",
+  "institution_type": "bank",
+  "institution_label": "synthetic_xlsx_bank",
+  "currency": "KRW",
+  "encoding": "utf-8",
+  "delimiter": ",",
+  "timezone_offset": "+09:00",
+  "occurred_at_format": "%Y-%m-%d %H:%M:%S",
+  "booked_on_format": "%Y-%m-%d",
+  "xlsx": {
+    "sheet": "Transactions",
+    "header_row": 1
+  },
+  "columns": {
+    "occurred_at": "occurred_at",
+    "booked_on": "booked_on",
+    "description": "description",
+    "counterparty": "counterparty",
+    "category": "category"
+  },
+  "amount": {
+    "mode": "signed",
+    "column": "amount",
+    "thousands_separator": "",
+    "decimal_separator": "."
+  },
+  "fingerprint_columns": ["transaction_ref"],
+  "reconciliation": {
+    "expected_row_count": 4,
+    "expected_valid_row_count": 3,
+    "expected_net_amount": 2650000
+  }
+}

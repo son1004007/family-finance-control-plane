@@ -1,0 +1,135 @@
+name: Ingestion CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ingestion-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      POSTGRES_DB: family_finance
+      POSTGRES_ADMIN_USER: finance_admin
+      POSTGRES_ADMIN_PASSWORD: ingestion-ci-only
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate scripts
+        run: |
+          set -euo pipefail
+          sh -n scripts/import_generic_csv.sh
+          sh -n scripts/import_generic_xlsx.sh
+          sh -n scripts/import_drop_folder.sh
+          python3 -m py_compile importers/generic_csv/emit_copy_sql_v2.py
+          python3 -m py_compile importers/generic_xlsx/xlsx_to_csv.py
+          python3 -m py_compile tests/fixtures/synthetic/generate_generic_bank_xlsx.py
+
+      - name: Start PostgreSQL and apply migrations
+        run: |
+          set -euo pipefail
+          docker compose up -d db
+          for i in $(seq 1 30); do
+            docker compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null 2>&1 && break
+            sleep 2
+          done
+          sh scripts/migrate_compose.sh
+
+      - name: Verify CSV importer remains idempotent
+        run: |
+          set -euo pipefail
+          first="$(sh scripts/import_generic_csv.sh tests/fixtures/synthetic/generic_bank.csv tests/fixtures/synthetic/generic_bank_mapping.json)"
+          printf '%s\n' "$first"
+          printf '%s\n' "$first" | grep -q '^GENERIC_CSV_IMPORT=PASS '
+          second="$(sh scripts/import_generic_csv.sh tests/fixtures/synthetic/generic_bank.csv tests/fixtures/synthetic/generic_bank_mapping.json)"
+          printf '%s\n' "$second" | grep -q '^GENERIC_CSV_IMPORT=PASS '
+          count="$(docker compose exec -T db psql -qAt -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" -c "SELECT COUNT(*) FROM finance.transactions t JOIN finance.accounts a USING(account_id) JOIN finance.households h USING(household_id) WHERE h.label='synthetic_import_household' AND a.account_label='synthetic_import_checking';")"
+          test "$count" -eq 3
+
+      - name: Generate and import synthetic XLSX twice
+        run: |
+          set -euo pipefail
+          python3 tests/fixtures/synthetic/generate_generic_bank_xlsx.py \
+            tests/fixtures/synthetic/generic_bank.csv "$RUNNER_TEMP/generic_bank.xlsx"
+          first="$(sh scripts/import_generic_xlsx.sh "$RUNNER_TEMP/generic_bank.xlsx" tests/fixtures/synthetic/generic_bank_xlsx_mapping.json)"
+          printf '%s\n' "$first"
+          printf '%s\n' "$first" | grep -q '^GENERIC_XLSX_IMPORT=PASS '
+          second="$(sh scripts/import_generic_xlsx.sh "$RUNNER_TEMP/generic_bank.xlsx" tests/fixtures/synthetic/generic_bank_xlsx_mapping.json)"
+          printf '%s\n' "$second" | grep -q '^GENERIC_XLSX_IMPORT=PASS '
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" <<'SQL'
+          DO $$
+          DECLARE batches integer; txs integer; source_rows integer; original text; batch_status text;
+          BEGIN
+            SELECT COUNT(*), MAX(b.original_filename), MAX(b.status)
+              INTO batches, original, batch_status
+            FROM ingest.import_batches b
+            WHERE b.source_type='generic_xlsx' AND b.source_name='synthetic_bank_xlsx';
+            IF batches <> 1 OR original <> 'generic_bank.xlsx' OR batch_status <> 'partial' THEN
+              RAISE EXCEPTION 'unexpected XLSX provenance: batches %, original %, status %', batches, original, batch_status;
+            END IF;
+            SELECT COUNT(*) INTO source_rows
+            FROM ingest.source_rows r
+            JOIN ingest.import_batches b USING(import_batch_id)
+            WHERE b.source_type='generic_xlsx' AND b.source_name='synthetic_bank_xlsx';
+            IF source_rows <> 4 THEN RAISE EXCEPTION 'expected four XLSX source rows, got %', source_rows; END IF;
+            SELECT COUNT(*) INTO txs
+            FROM finance.transactions t
+            JOIN finance.accounts a USING(account_id)
+            JOIN finance.households h USING(household_id)
+            WHERE h.label='synthetic_xlsx_household' AND a.account_label='synthetic_xlsx_checking';
+            IF txs <> 3 THEN RAISE EXCEPTION 'expected three XLSX normalized txs, got %', txs; END IF;
+          END $$;
+          SQL
+
+      - name: Verify reconciliation failure blocks transaction writes
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' "$RUNNER_TEMP/bad_mapping.json"
+          import json, sys
+          src=json.load(open('tests/fixtures/synthetic/generic_bank_xlsx_mapping.json', encoding='utf-8'))
+          src['source_name']='synthetic_bad_reconcile'
+          src['household_label']='synthetic_bad_reconcile_household'
+          src['account_label']='synthetic_bad_reconcile_checking'
+          src['reconciliation']['expected_net_amount']=1
+          json.dump(src, open(sys.argv[1], 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+          PY
+          if sh scripts/import_generic_xlsx.sh "$RUNNER_TEMP/generic_bank.xlsx" "$RUNNER_TEMP/bad_mapping.json"; then
+            echo '::error::reconciliation mismatch unexpectedly succeeded'
+            exit 1
+          fi
+          status="$(docker compose exec -T db psql -qAt -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" -c "SELECT status FROM ingest.import_batches WHERE source_type='generic_xlsx' AND source_name='synthetic_bad_reconcile';")"
+          test "$status" = failed
+          txs="$(docker compose exec -T db psql -qAt -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" -c "SELECT COUNT(*) FROM finance.transactions t JOIN finance.accounts a USING(account_id) JOIN finance.households h USING(household_id) WHERE h.label='synthetic_bad_reconcile_household';")"
+          test "$txs" -eq 0
+          echo 'RECONCILIATION_FAIL_CLOSED=PASS'
+
+      - name: Verify drop-folder archive lifecycle
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/drop"
+          mkdir -p "$root/raw" "$root/mappings"
+          cp tests/fixtures/synthetic/generic_bank.csv "$root/raw/drop.csv"
+          python3 - <<'PY' "$root/mappings/drop.mapping.json"
+          import json, sys
+          src=json.load(open('tests/fixtures/synthetic/generic_bank_mapping.json', encoding='utf-8'))
+          src['source_name']='synthetic_drop_csv'
+          src['household_label']='synthetic_drop_household'
+          src['account_label']='synthetic_drop_checking'
+          json.dump(src, open(sys.argv[1], 'w', encoding='utf-8'), ensure_ascii=False, indent=2)
+          PY
+          output="$(FINANCE_IMPORT_ROOT="$root" sh scripts/import_drop_folder.sh)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -q 'processed=1 completed=1 rejected=0'
+          test -z "$(find "$root/raw" -type f -print -quit)"
+          test -n "$(find "$root/archive" -type f -name 'drop.csv' -print -quit)"
+          echo 'DROP_FOLDER_ARCHIVE=PASS'
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v

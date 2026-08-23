@@ -1,0 +1,47 @@
+name: Fresh Clone E2E
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout clean repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          clean: true
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Validate E2E script
+        run: sh -n scripts/run_synthetic_e2e.sh
+
+      - name: Run complete synthetic path
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$(sh scripts/run_synthetic_e2e.sh)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -q '^SYNTHETIC_E2E_IMPORTS=PASS$'
+          printf '%s\n' "$output" | grep -q '^SYNTHETIC_E2E_ANALYTICS=PASS$'
+          printf '%s\n' "$output" | grep -q '^SYNTHETIC_E2E_MCP=PASS$'
+          printf '%s\n' "$output" | grep -q '^SYNTHETIC_E2E=PASS$'
+
+      - name: Verify no synthetic E2E containers remain
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker ps -a --format '{{.Names}}' | grep -q '^family-finance-synthetic-e2e-'; then
+            docker ps -a
+            echo '::error::synthetic E2E left containers behind'
+            exit 1
+          fi
