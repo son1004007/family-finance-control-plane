@@ -1,0 +1,31 @@
+{
+  "format_version": 1,
+  "source_name": "replace_with_private_source_name",
+  "household_label": "primary_household",
+  "account_label": "replace_with_private_account_label",
+  "account_type": "checking",
+  "institution_type": "bank",
+  "institution_label": "replace_with_private_institution_label",
+  "currency": "KRW",
+  "encoding": "utf-8-sig",
+  "delimiter": ",",
+  "timezone_offset": "+09:00",
+  "occurred_at_format": "%Y-%m-%d %H:%M:%S",
+  "booked_on_format": "%Y-%m-%d",
+  "columns": {
+    "occurred_at": "replace_timestamp_column",
+    "booked_on": "replace_booking_date_column",
+    "description": "replace_description_column",
+    "counterparty": "replace_counterparty_column",
+    "category": "replace_category_column_if_present"
+  },
+  "amount": {
+    "mode": "signed",
+    "column": "replace_amount_column",
+    "thousands_separator": ",",
+    "decimal_separator": "."
+  },
+  "fingerprint_columns": [
+    "replace_stable_transaction_id_column"
+  ]
+}
