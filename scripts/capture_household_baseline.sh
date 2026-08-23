@@ -170,13 +170,24 @@ docker_cmd exec -i "$CONTAINER_NAME" psql -v ON_ERROR_STOP=1 \
 BEGIN;
 
 INSERT INTO ingest.import_batches(
-  source_type, source_name, file_sha256, status, row_count, completed_at
+  source_type, source_name, file_sha256, normalizer_version,
+  status, row_count, completed_at
 )
 VALUES (
-  'manual_baseline', 'nas_interactive', '$BATCH_HASH', 'completed', 8, now()
+  'manual_baseline', 'nas_interactive', '$BATCH_HASH', 'baseline_capture_v1',
+  'completed', 8, now()
 )
-ON CONFLICT (file_sha256) DO UPDATE
-SET status = 'completed', row_count = EXCLUDED.row_count, completed_at = now();
+ON CONFLICT DO NOTHING;
+
+UPDATE ingest.import_batches
+SET status = 'completed',
+    row_count = 8,
+    normalizer_version = 'baseline_capture_v1',
+    completed_at = now()
+WHERE source_type = 'manual_baseline'
+  AND source_name = 'nas_interactive'
+  AND file_sha256 = '$BATCH_HASH'
+  AND mapping_sha256 IS NULL;
 
 INSERT INTO finance.households(label, base_currency)
 VALUES ('primary_household', 'KRW')
@@ -223,7 +234,11 @@ INSERT INTO finance.account_balance_snapshots(
 SELECT a.account_id, TIMESTAMPTZ '$BASELINE_TS', $LIQUID_CASH::numeric, 'KRW', b.import_batch_id
 FROM finance.accounts a
 JOIN finance.households h ON h.household_id = a.household_id
-JOIN ingest.import_batches b ON b.file_sha256 = '$BATCH_HASH'
+JOIN ingest.import_batches b
+  ON b.source_type = 'manual_baseline'
+ AND b.source_name = 'nas_interactive'
+ AND b.file_sha256 = '$BATCH_HASH'
+ AND b.mapping_sha256 IS NULL
 WHERE h.label = 'primary_household' AND a.account_label = 'baseline_liquid_cash'
 ON CONFLICT (account_id, balance_at) DO UPDATE
 SET balance = EXCLUDED.balance, import_batch_id = EXCLUDED.import_batch_id;
@@ -235,7 +250,11 @@ INSERT INTO finance.asset_snapshots(
 SELECT h.household_id, x.asset_type, x.asset_label, TIMESTAMPTZ '$BASELINE_TS',
        x.market_value, x.liquid_value, 'KRW', b.import_batch_id
 FROM finance.households h
-JOIN ingest.import_batches b ON b.file_sha256 = '$BATCH_HASH'
+JOIN ingest.import_batches b
+  ON b.source_type = 'manual_baseline'
+ AND b.source_name = 'nas_interactive'
+ AND b.file_sha256 = '$BATCH_HASH'
+ AND b.mapping_sha256 IS NULL
 CROSS JOIN (VALUES
   ('housing', 'baseline_housing_asset', $HOUSING_ASSET::numeric, 0::numeric),
   ('investment', 'baseline_investment_assets', $INVESTMENT_ASSETS::numeric, $INVESTMENT_ASSETS::numeric),
@@ -254,7 +273,11 @@ INSERT INTO finance.liability_snapshots(
 SELECT h.household_id, 'aggregate_debt', 'baseline_total_debt', TIMESTAMPTZ '$BASELINE_TS',
        $TOTAL_DEBT::numeric, 'KRW', b.import_batch_id
 FROM finance.households h
-JOIN ingest.import_batches b ON b.file_sha256 = '$BATCH_HASH'
+JOIN ingest.import_batches b
+  ON b.source_type = 'manual_baseline'
+ AND b.source_name = 'nas_interactive'
+ AND b.file_sha256 = '$BATCH_HASH'
+ AND b.mapping_sha256 IS NULL
 WHERE h.label = 'primary_household'
 ON CONFLICT (household_id, liability_label, valued_at) DO UPDATE
 SET principal_balance = EXCLUDED.principal_balance,

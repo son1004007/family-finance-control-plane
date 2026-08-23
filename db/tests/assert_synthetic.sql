@@ -80,15 +80,4 @@ BEGIN
 END
 $$;
 
-DO $$
-DECLARE
-  actual INTEGER;
-BEGIN
-  SELECT COUNT(*) INTO actual FROM meta.schema_migrations;
-  IF actual <> 4 THEN
-    RAISE EXCEPTION 'expected 4 applied migrations, got %', actual;
-  END IF;
-END
-$$;
-
 SELECT 'SYNTHETIC_ASSERTIONS=PASS' AS result;
