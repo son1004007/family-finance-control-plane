@@ -108,6 +108,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          set -a
+          . "$MCP_SECRET_FILE"
+          set +a
           docker compose -f compose.yaml -f compose.mcp.yaml exec -T mcp python - <<'PY'
           import asyncio
           from mcp import Client
@@ -118,6 +121,11 @@ jobs:
               'scenario_outcomes',
           }
 
+          def rows(result):
+              assert not result.is_error, result.content
+              assert result.structured_content is not None, result.content
+              return result.structured_content['rows']
+
           async def main():
               async with Client('http://127.0.0.1:8000/mcp') as client:
                   listed = await client.list_tools()
@@ -125,30 +133,23 @@ jobs:
                   assert names == EXPECTED, names
                   assert all(tool.annotations and tool.annotations.read_only_hint is True for tool in listed.tools)
 
-                  result = await client.call_tool('financial_snapshot', {'household_label':'synthetic_household','currency':'KRW'})
-                  assert not result.is_error, result
-                  row = result.structured_content['rows'][0]
+                  row = rows(await client.call_tool('financial_snapshot', {'household_label':'synthetic_household','currency':'KRW'}))[0]
                   assert row['net_worth'] == '18000000.00', row
                   assert row['liquid_reserve'] == '30000000.00', row
 
-                  result = await client.call_tool('cash_flow', {'household_label':'synthetic_household','months':12,'currency':'KRW'})
-                  row = result.structured_content['rows'][0]
+                  row = rows(await client.call_tool('cash_flow', {'household_label':'synthetic_household','months':12,'currency':'KRW'}))[0]
                   assert row['net_cash_flow'] == '2350000.00', row
 
-                  result = await client.call_tool('spending_summary', {'household_label':'synthetic_household','months':3,'currency':'KRW'})
-                  rows = result.structured_content['rows']
-                  assert rows[0]['category'] == 'housing' and rows[0]['spending'] == '1500000.00', rows
+                  spending = rows(await client.call_tool('spending_summary', {'household_label':'synthetic_household','months':3,'currency':'KRW'}))
+                  assert spending[0]['category'] == 'housing' and spending[0]['spending'] == '1500000.00', spending
 
-                  result = await client.call_tool('net_worth_history', {'household_label':'synthetic_household','months':12,'currency':'KRW'})
-                  rows = result.structured_content['rows']
-                  assert rows[-1]['net_worth'] == '18000000.00' and rows[-1]['net_worth_change'] == '3000000.00', rows
+                  history = rows(await client.call_tool('net_worth_history', {'household_label':'synthetic_household','months':12,'currency':'KRW'}))
+                  assert history[-1]['net_worth'] == '18000000.00' and history[-1]['net_worth_change'] == '3000000.00', history
 
-                  result = await client.call_tool('emergency_reserve', {'household_label':'synthetic_household','currency':'KRW'})
-                  row = result.structured_content['rows'][0]
+                  row = rows(await client.call_tool('emergency_reserve', {'household_label':'synthetic_household','currency':'KRW'}))[0]
                   assert row['coverage_months'] == '100.00' and row['coverage_status'] == 'calculated', row
 
-                  result = await client.call_tool('scenario_outcomes', {'household_label':'synthetic_household','currency':'KRW'})
-                  row = result.structured_content['rows'][0]
+                  row = rows(await client.call_tool('scenario_outcomes', {'household_label':'synthetic_household','currency':'KRW'}))[0]
                   assert row['annual_net_after_modeled_costs'] == '60520000.00', row
                   assert row['projected_liquid_reserve_after_housing'] == '-70000000.00', row
 
@@ -194,6 +195,12 @@ jobs:
           fi
           printf '%s\n' "$logs" | grep -q 'mcp_tool_complete'
           echo 'MCP_METADATA_ONLY_LOGGING=PASS'
+
+      - name: Sanitized MCP diagnostics
+        if: failure()
+        shell: bash
+        run: |
+          docker logs family-finance-mcp 2>&1 | grep -E 'mcp_tool_(complete|failed)|ERROR|Traceback' || true
 
       - name: Cleanup
         if: always()
