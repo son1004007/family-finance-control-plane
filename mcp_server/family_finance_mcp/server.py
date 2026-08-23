@@ -55,8 +55,6 @@ def _safe_value(value: Any) -> str | int | bool | None:
         return value
     if isinstance(value, (Decimal, date, datetime)):
         return str(value)
-    # Curated SQL should not return arbitrary objects. Convert unexpected scalar
-    # values to text instead of leaking a Python repr with implementation detail.
     return str(value)
 
 
@@ -119,8 +117,6 @@ async def _query(tool: str, sql: str, params: tuple[Any, ...] = ()) -> RowsResul
         )
         return result
     except Exception as exc:
-        # Do not log SQL text, tool arguments, credentials, or database error
-        # messages: those may contain private household data or connection detail.
         LOGGER.error(
             "mcp_tool_failed tool=%s error_type=%s duration_ms=%d",
             tool,
@@ -166,7 +162,8 @@ async def financial_snapshot(household_label: str, currency: str | None = None) 
                s.net_worth, s.liquid_reserve, s.income_as_of_date
         FROM analytics.v_household_financial_snapshot_by_currency s
         JOIN analytics.v_household_directory d USING (household_id)
-        WHERE d.household_label = %s AND (%s IS NULL OR s.currency = %s)
+        WHERE d.household_label = %s
+          AND (%s::text IS NULL OR s.currency::text = %s::text)
         ORDER BY s.currency
         LIMIT %s
         """,
@@ -186,7 +183,8 @@ async def cash_flow(household_label: str, months: int = 12, currency: str | None
           SELECT c.month, c.currency, c.inflow, c.outflow, c.net_cash_flow, c.transaction_count
           FROM analytics.v_monthly_cash_flow_calendar c
           JOIN analytics.v_household_directory d USING (household_id)
-          WHERE d.household_label = %s AND (%s IS NULL OR c.currency = %s)
+          WHERE d.household_label = %s
+            AND (%s::text IS NULL OR c.currency::text = %s::text)
           ORDER BY c.month DESC, c.currency
           LIMIT %s
         ) recent
@@ -213,7 +211,8 @@ async def spending_summary(
           SELECT s.*
           FROM analytics.v_monthly_spending_by_category s
           JOIN analytics.v_household_directory d USING (household_id)
-          WHERE d.household_label = %s AND (%s IS NULL OR s.currency = %s)
+          WHERE d.household_label = %s
+            AND (%s::text IS NULL OR s.currency::text = %s::text)
         ), latest AS (
           SELECT currency, MAX(month) AS latest_month FROM scoped GROUP BY currency
         )
@@ -244,7 +243,8 @@ async def net_worth_history(household_label: str, months: int = 12, currency: st
           SELECT n.*
           FROM analytics.v_net_worth_history_by_currency n
           JOIN analytics.v_household_directory d USING (household_id)
-          WHERE d.household_label = %s AND (%s IS NULL OR n.currency = %s)
+          WHERE d.household_label = %s
+            AND (%s::text IS NULL OR n.currency::text = %s::text)
           ORDER BY n.month DESC, n.currency
           LIMIT %s
         ) recent
@@ -264,7 +264,8 @@ async def emergency_reserve(household_label: str, currency: str | None = None) -
                e.coverage_months, e.coverage_status
         FROM analytics.v_emergency_reserve_coverage e
         JOIN analytics.v_household_directory d USING (household_id)
-        WHERE d.household_label = %s AND (%s IS NULL OR e.currency = %s)
+        WHERE d.household_label = %s
+          AND (%s::text IS NULL OR e.currency::text = %s::text)
         ORDER BY e.currency
         LIMIT %s
         """,
@@ -293,7 +294,7 @@ async def scenario_outcomes(household_label: str, currency: str | None = None, l
         FROM analytics.v_household_scenario_outcomes s
         JOIN analytics.v_household_directory d USING (household_id)
         WHERE d.household_label = %s AND s.active
-          AND (%s IS NULL OR s.currency = %s)
+          AND (%s::text IS NULL OR s.currency::text = %s::text)
         ORDER BY s.scenario_label
         LIMIT %s
         """,
