@@ -17,7 +17,7 @@ services:
       retries: 10
       start_period: 10s
     volumes:
-      - finance_postgres_data:/var/lib/postgresql/data
+      - ${FINANCE_POSTGRES_DATA_SOURCE:-finance_postgres_data}:/var/lib/postgresql/data
     networks:
       - finance_internal
 
