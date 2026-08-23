@@ -35,10 +35,10 @@ for file in "$MIGRATION_DIR"/*.sql; do
   version="$(basename "$file")"
   checksum="$(sha256_file "$file")"
 
-  existing="$(compose exec -T db psql -At -v ON_ERROR_STOP=1 \
-    -v version="$version" \
-    -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
-    -c "SELECT checksum FROM meta.schema_migrations WHERE version = :'version';")"
+  existing="$(printf '%s\n' "SELECT checksum FROM meta.schema_migrations WHERE version = :'version';" \
+    | compose exec -T db psql -At -v ON_ERROR_STOP=1 \
+        -v version="$version" \
+        -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB")"
 
   if [ -n "$existing" ]; then
     if [ "$existing" != "$checksum" ]; then
