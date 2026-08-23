@@ -1,0 +1,147 @@
+name: Collector CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  collector-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      POSTGRES_DB: family_finance
+      POSTGRES_ADMIN_USER: finance_admin
+      POSTGRES_ADMIN_PASSWORD: collector-ci-only
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate source and privacy rules
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh -n scripts/provision_collector_login.sh
+          python3 -m py_compile \
+            scripts/authorize_gmail_collector.py \
+            collector/family_finance_collector/config.py \
+            collector/family_finance_collector/rules.py \
+            collector/family_finance_collector/db.py \
+            collector/family_finance_collector/gmail.py \
+            collector/family_finance_collector/main.py
+          python3 tests/test_collector_rules.py
+          grep -q '^google-api-python-client==2.198.0$' collector/requirements.txt
+          grep -q '^google-auth-oauthlib==1.4.0$' collector/requirements-auth.txt
+          if grep -R --line-number -E 'gmail\.modify|gmail\.send|gmail\.compose' scripts/authorize_gmail_collector.py collector/; then
+            echo '::error::collector must stay gmail.readonly'
+            exit 1
+          fi
+          grep -q 'gmail.readonly' scripts/authorize_gmail_collector.py
+          grep -q 'gmail.readonly' collector/family_finance_collector/gmail.py
+
+      - name: Validate Compose network boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '{}\n' > "$RUNNER_TEMP/gmail-token.json"
+          export FINANCE_COLLECTOR_DB_USER=validation_collector
+          export FINANCE_COLLECTOR_DB_PASSWORD=validation-only
+          export FINANCE_COLLECTOR_CONFIG_SOURCE="$PWD/config/collector.example.json"
+          export FINANCE_GMAIL_TOKEN_SOURCE="$RUNNER_TEMP/gmail-token.json"
+          docker compose -f compose.yaml -f compose.collector.yaml config --format json > "$RUNNER_TEMP/collector-compose.json"
+          python3 - "$RUNNER_TEMP/collector-compose.json" <<'PY'
+          import json, sys
+          cfg=json.load(open(sys.argv[1], encoding='utf-8'))
+          collector=cfg['services']['collector']
+          db=cfg['services']['db']
+          assert not collector.get('ports'), 'collector must not publish a host port'
+          assert not db.get('ports'), 'database must not publish a host port'
+          assert collector.get('read_only') is True
+          assert 'ALL' in collector.get('cap_drop', [])
+          assert set(collector.get('networks', {})) == {'finance_internal', 'collector_egress'}
+          assert set(db.get('networks', {})) == {'finance_internal'}
+          assert cfg['networks']['finance_internal'].get('internal') is True
+          assert cfg['networks']['collector_egress'].get('internal') is not True
+          print('COLLECTOR_COMPOSE_BOUNDARY=PASS')
+          PY
+
+      - name: Start PostgreSQL and migrate
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up -d db
+          for i in $(seq 1 30); do
+            docker compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null 2>&1 && break
+            sleep 2
+          done
+          sh scripts/migrate_compose.sh
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" < db/fixtures/synthetic_household.sql
+
+      - name: Provision collector-only database login
+        shell: bash
+        run: |
+          set -euo pipefail
+          FINANCE_COLLECTOR_SECRET_FILE="$RUNNER_TEMP/collector.env" sh scripts/provision_collector_login.sh
+          test "$(stat -c '%a' "$RUNNER_TEMP/collector.env")" = 600
+          echo "COLLECTOR_SECRET_FILE=$RUNNER_TEMP/collector.env" >> "$GITHUB_ENV"
+
+      - name: Verify collector can stage but cannot mutate ledger
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . "$COLLECTOR_SECRET_FILE"
+          set +a
+          sql() {
+            docker compose exec -T -e PGPASSWORD="$FINANCE_COLLECTOR_DB_PASSWORD" db \
+              psql -h 127.0.0.1 -qAt -v ON_ERROR_STOP=1 \
+              -U "$FINANCE_COLLECTOR_DB_USER" -d "$POSTGRES_DB" "$@"
+          }
+          household_id="$(sql -c "SELECT household_id FROM finance.households WHERE label='synthetic_household';")"
+          test -n "$household_id"
+          sql -c "INSERT INTO ingest.collection_sources(household_id,source_key,source_type,display_label,authority_level,cadence_seconds,freshness_sla_seconds) VALUES ($household_id,'ci_mail','gmail','CI mailbox','reconciling',900,3600);"
+          source_id="$(sql -c "SELECT collection_source_id FROM ingest.collection_sources WHERE household_id=$household_id AND source_key='ci_mail';")"
+          sql -c "INSERT INTO ingest.collection_runs(collection_source_id,status,completed_at) VALUES ($source_id,'completed',now());"
+          sql -c "INSERT INTO ingest.collection_observations(collection_source_id,observation_type,authority_level,external_event_hash,subject_key,currency) VALUES ($source_id,'test_notice','supplemental',repeat('a',64),'fixture','KRW');"
+          test "$(sql -c "SELECT COUNT(*) FROM ingest.collection_observations WHERE collection_source_id=$source_id;")" = 1
+          if sql -c "INSERT INTO finance.transactions(account_id,occurred_at,amount) VALUES (1,now(),1);"; then
+            echo '::error::collector unexpectedly mutated finance.transactions'
+            exit 1
+          fi
+          echo 'COLLECTOR_DATABASE_BOUNDARY=PASS'
+
+      - name: Verify freshness view
+        run: |
+          set -euo pipefail
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "UPDATE ingest.collection_sources SET last_success_at=now() WHERE source_key='ci_mail';"
+          status="$(docker compose exec -T db psql -qAt -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "SELECT freshness_status FROM analytics.v_collection_source_freshness WHERE source_key='ci_mail';")"
+          test "$status" = fresh
+          echo 'COLLECTION_FRESHNESS=PASS'
+
+      - name: Build hardened collector image
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '{}\n' > "$RUNNER_TEMP/gmail-token.json"
+          set -a
+          . "$COLLECTOR_SECRET_FILE"
+          set +a
+          FINANCE_COLLECTOR_CONFIG_SOURCE="$PWD/config/collector.example.json" \
+          FINANCE_GMAIL_TOKEN_SOURCE="$RUNNER_TEMP/gmail-token.json" \
+            docker compose -f compose.yaml -f compose.collector.yaml build collector
+          echo 'COLLECTOR_IMAGE_BUILD=PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          FINANCE_COLLECTOR_DB_USER=cleanup FINANCE_COLLECTOR_DB_PASSWORD=cleanup \
+          FINANCE_COLLECTOR_CONFIG_SOURCE="$PWD/config/collector.example.json" \
+          FINANCE_GMAIL_TOKEN_SOURCE="$RUNNER_TEMP/gmail-token.json" \
+            docker compose -f compose.yaml -f compose.collector.yaml down -v --remove-orphans || true

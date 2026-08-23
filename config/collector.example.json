@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "sources": [
+    {
+      "household_label": "synthetic_household",
+      "source_key": "gmail_finance_mail",
+      "source_type": "gmail",
+      "display_label": "Synthetic finance mailbox",
+      "authority_level": "reconciling",
+      "cadence_seconds": 900,
+      "freshness_sla_seconds": 3600,
+      "gmail": {
+        "user_id": "me",
+        "initial_query": "newer_than:30d -in:spam -in:trash",
+        "max_initial_messages": 500,
+        "rules": [
+          {
+            "rule_id": "bank_statement_notice",
+            "observation_type": "financial_statement_notice",
+            "authority_level": "reconciling",
+            "from_regex": "(?i)statement@example\\.test$",
+            "subject_regex": "(?i)statement|account report"
+          },
+          {
+            "rule_id": "tax_payment_notice",
+            "observation_type": "tax_obligation",
+            "authority_level": "reconciling",
+            "from_regex": "(?i)tax@example\\.test$",
+            "subject_regex": "(?i)tax|automatic payment",
+            "amount_regex": "(?P<amount>[0-9][0-9,]*)\\s*(?:KRW|won)",
+            "currency": "KRW"
+          },
+          {
+            "rule_id": "merchant_receipt",
+            "observation_type": "purchase_receipt",
+            "authority_level": "supplemental",
+            "from_regex": "(?i)receipt@example\\.test$",
+            "subject_regex": "(?i)receipt|order",
+            "amount_regex": "(?P<amount>[0-9][0-9,]*)\\s*(?:KRW|won)",
+            "currency": "KRW"
+          }
+        ]
+      }
+    }
+  ]
+}

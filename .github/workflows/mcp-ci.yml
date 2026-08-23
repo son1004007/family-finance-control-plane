@@ -46,7 +46,7 @@ jobs:
           assert tools, 'no MCP tools found'
           forbidden=[name for name in tools if 'sql' in name.lower() or name.lower() in {'query','execute','run_query'}]
           assert not forbidden, f'arbitrary SQL-like MCP tools: {forbidden}'
-          assert len(tools)==7, tools
+          assert len(tools)==9, tools
           print('MCP_TOOL_SURFACE=PASS tools=' + ','.join(sorted(tools)))
           PY
           export FINANCE_MCP_DB_USER=ci_mcp_reader
@@ -79,6 +79,15 @@ jobs:
           for f in db/fixtures/synthetic_household.sql db/fixtures/synthetic_metrics.sql db/fixtures/synthetic_history.sql db/fixtures/synthetic_scenarios.sql; do
             docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" < "$f"
           done
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" <<'SQL'
+          INSERT INTO ingest.collection_sources(
+            household_id, source_key, source_type, display_label, authority_level,
+            cadence_seconds, freshness_sla_seconds, last_attempt_at, last_success_at
+          )
+          SELECT household_id, 'synthetic_mail', 'gmail', 'Synthetic mailbox', 'reconciling',
+                 900, 3600, now(), now()
+          FROM finance.households WHERE label='synthetic_household';
+          SQL
 
       - name: Provision narrow MCP login
         shell: bash
@@ -118,7 +127,7 @@ jobs:
           EXPECTED = {
               'list_households', 'financial_snapshot', 'cash_flow',
               'spending_summary', 'net_worth_history', 'emergency_reserve',
-              'scenario_outcomes',
+              'scenario_outcomes', 'data_freshness', 'change_summary',
           }
 
           def rows(result):
@@ -153,6 +162,12 @@ jobs:
                   assert row['annual_net_after_modeled_costs'] == '60520000.00', row
                   assert row['projected_liquid_reserve_after_housing'] == '-70000000.00', row
 
+                  freshness = rows(await client.call_tool('data_freshness', {'household_label':'synthetic_household'}))[0]
+                  assert freshness['source_key'] == 'synthetic_mail' and freshness['freshness_status'] == 'fresh', freshness
+
+                  change = rows(await client.call_tool('change_summary', {'household_label':'synthetic_household','currency':'KRW'}))[0]
+                  assert change['net_worth'] == '18000000.00' and change['net_worth_change'] == '3000000.00', change
+
                   invalid = await client.call_tool('does_not_exist', {})
                   assert invalid.is_error is True
 
@@ -169,7 +184,7 @@ jobs:
           set +a
           docker compose exec -T -e PGPASSWORD="$FINANCE_MCP_DB_PASSWORD" db \
             psql -h 127.0.0.1 -qAt -v ON_ERROR_STOP=1 -U "$FINANCE_MCP_DB_USER" -d "$POSTGRES_DB" \
-            -c "SELECT COUNT(*) FROM analytics.v_household_directory;" >/dev/null
+            -c "SELECT COUNT(*) FROM analytics.v_household_directory; SELECT COUNT(*) FROM analytics.v_collection_source_freshness;" >/dev/null
           if docker compose exec -T -e PGPASSWORD="$FINANCE_MCP_DB_PASSWORD" db \
               psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -U "$FINANCE_MCP_DB_USER" -d "$POSTGRES_DB" \
               -c "SELECT COUNT(*) FROM finance.transactions;"; then
