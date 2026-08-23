@@ -1,0 +1,72 @@
+name: Scenario CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  household-scenario-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      POSTGRES_DB: family_finance
+      POSTGRES_ADMIN_USER: finance_admin
+      POSTGRES_ADMIN_PASSWORD: ci-only-not-a-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Start PostgreSQL 16
+        run: |
+          set -euo pipefail
+          docker compose up -d db
+          for i in $(seq 1 30); do
+            if docker compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs db
+          exit 1
+
+      - name: Apply migrations
+        run: sh scripts/migrate_compose.sh
+
+      - name: Load fictional scenario fixtures
+        run: |
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/fixtures/synthetic_household.sql
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/fixtures/synthetic_scenarios.sql
+
+      - name: Verify deterministic scenario outcome
+        run: |
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/tests/assert_scenarios.sql
+
+      - name: Verify AI reader sees scenario outcome but cannot mutate facts
+        run: |
+          set -euo pipefail
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "SET ROLE finance_ai_reader; SELECT scenario_label, annual_net_after_modeled_costs FROM analytics.v_household_scenario_outcomes;"
+
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+              -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_ai_reader; UPDATE planning.household_scenarios SET notes='forbidden';"; then
+            echo '::error::finance_ai_reader unexpectedly mutated planning scenario'
+            exit 1
+          fi
+          echo 'SCENARIO_AI_READER_BOUNDARY=PASS'
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
