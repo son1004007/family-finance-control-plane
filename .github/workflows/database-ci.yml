@@ -91,6 +91,13 @@ jobs:
           fi
           echo 'AI_WRITER_PLANNING_BOUNDARY=PASS'
 
+      - name: Verify logical backup and isolated restore
+        run: |
+          set -euo pipefail
+          output="$(BACKUP_DIR="$RUNNER_TEMP/family-finance-backups" sh scripts/backup_postgres_compose.sh)"
+          printf '%s\n' "$output"
+          printf '%s\n' "$output" | grep -q '^POSTGRES_BACKUP_RESTORE=PASS$'
+
       - name: Show database version
         run: |
           docker compose exec -T db psql -At \
