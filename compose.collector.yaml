@@ -1,0 +1,36 @@
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: collector/Dockerfile
+    container_name: ${FINANCE_COLLECTOR_CONTAINER:-family-finance-collector}
+    restart: unless-stopped
+    environment:
+      FINANCE_DB_HOST: db
+      FINANCE_DB_PORT: "5432"
+      FINANCE_DB_NAME: ${POSTGRES_DB:-family_finance}
+      FINANCE_COLLECTOR_DB_USER: ${FINANCE_COLLECTOR_DB_USER:?FINANCE_COLLECTOR_DB_USER must be set}
+      FINANCE_COLLECTOR_DB_PASSWORD: ${FINANCE_COLLECTOR_DB_PASSWORD:?FINANCE_COLLECTOR_DB_PASSWORD must be set}
+      COLLECTOR_CONFIG_FILE: /run/config/collector.json
+      GMAIL_TOKEN_FILE: /run/secrets/gmail-token.json
+      COLLECTOR_TICK_SECONDS: ${COLLECTOR_TICK_SECONDS:-60}
+      COLLECTOR_LOG_LEVEL: INFO
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      - ${FINANCE_COLLECTOR_CONFIG_SOURCE:?FINANCE_COLLECTOR_CONFIG_SOURCE must be set}:/run/config/collector.json:ro
+      - ${FINANCE_GMAIL_TOKEN_SOURCE:?FINANCE_GMAIL_TOKEN_SOURCE must be set}:/run/secrets/gmail-token.json:ro
+    networks:
+      - finance_internal
+      - collector_egress
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+
+networks:
+  collector_egress: {}
