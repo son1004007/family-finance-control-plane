@@ -49,11 +49,44 @@ $$;
 
 DO $$
 DECLARE
+  annual_gross NUMERIC;
+  monthly_net NUMERIC;
+  earners BIGINT;
+  tracked BIGINT;
+BEGIN
+  SELECT
+    i.annual_gross_income,
+    i.monthly_net_income,
+    i.earning_adult_count,
+    i.tracked_adult_count
+  INTO annual_gross, monthly_net, earners, tracked
+  FROM analytics.v_current_household_income_by_currency i
+  JOIN finance.households h ON h.household_id = i.household_id
+  WHERE h.label = 'synthetic_household'
+    AND i.currency = 'KRW';
+
+  IF annual_gross IS DISTINCT FROM 60000000::numeric THEN
+    RAISE EXCEPTION 'unexpected current annual gross income: %', annual_gross;
+  END IF;
+  IF monthly_net IS DISTINCT FROM 5200000::numeric THEN
+    RAISE EXCEPTION 'unexpected current monthly net income: %', monthly_net;
+  END IF;
+  IF earners IS DISTINCT FROM 1::bigint THEN
+    RAISE EXCEPTION 'unexpected earning adult count: %', earners;
+  END IF;
+  IF tracked IS DISTINCT FROM 2::bigint THEN
+    RAISE EXCEPTION 'unexpected tracked adult count: %', tracked;
+  END IF;
+END
+$$;
+
+DO $$
+DECLARE
   actual INTEGER;
 BEGIN
   SELECT COUNT(*) INTO actual FROM meta.schema_migrations;
-  IF actual <> 3 THEN
-    RAISE EXCEPTION 'expected 3 applied migrations, got %', actual;
+  IF actual <> 4 THEN
+    RAISE EXCEPTION 'expected 4 applied migrations, got %', actual;
   END IF;
 END
 $$;
