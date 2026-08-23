@@ -29,10 +29,26 @@ jobs:
           python3 -m py_compile mcp_server/family_finance_mcp/server.py
           grep -q '^mcp==2.0.0$' mcp_server/requirements.txt
           grep -q '^psycopg\[binary\]==3.3.4$' mcp_server/requirements.txt
-          if grep -Eq '@mcp\.tool.*sql|def .*sql|execute_sql|query_sql' mcp_server/family_finance_mcp/server.py; then
-            echo '::error::arbitrary SQL-like MCP tool detected'
-            exit 1
-          fi
+          python3 - <<'PY'
+          import ast
+          from pathlib import Path
+
+          tree=ast.parse(Path('mcp_server/family_finance_mcp/server.py').read_text(encoding='utf-8'))
+          tools=[]
+          for node in tree.body:
+              if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                  continue
+              for dec in node.decorator_list:
+                  call=dec if isinstance(dec, ast.Call) else None
+                  func=call.func if call else dec
+                  if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name) and func.value.id=='mcp' and func.attr=='tool':
+                      tools.append(node.name)
+          assert tools, 'no MCP tools found'
+          forbidden=[name for name in tools if 'sql' in name.lower() or name.lower() in {'query','execute','run_query'}]
+          assert not forbidden, f'arbitrary SQL-like MCP tools: {forbidden}'
+          assert len(tools)==7, tools
+          print('MCP_TOOL_SURFACE=PASS tools=' + ','.join(sorted(tools)))
+          PY
           export FINANCE_MCP_DB_USER=ci_mcp_reader
           export FINANCE_MCP_DB_PASSWORD=ci-placeholder-only
           docker compose -f compose.yaml -f compose.mcp.yaml config --format json > "$RUNNER_TEMP/mcp-compose.json"
@@ -43,8 +59,7 @@ jobs:
           assert not mcp.get('ports'), 'MCP must not publish a host port'
           assert mcp.get('read_only') is True
           assert 'ALL' in mcp.get('cap_drop', [])
-          networks=mcp.get('networks', {})
-          assert 'finance_internal' in networks
+          assert 'finance_internal' in mcp.get('networks', {})
           print('MCP_COMPOSE_BOUNDARY=PASS')
           PY
 
@@ -182,4 +197,7 @@ jobs:
 
       - name: Cleanup
         if: always()
-        run: docker compose -f compose.yaml -f compose.mcp.yaml down -v --remove-orphans || true
+        shell: bash
+        run: |
+          FINANCE_MCP_DB_USER=cleanup FINANCE_MCP_DB_PASSWORD=cleanup \
+            docker compose -f compose.yaml -f compose.mcp.yaml down -v --remove-orphans || true
