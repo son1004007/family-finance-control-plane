@@ -6,8 +6,29 @@ POSTGRES_DB="${POSTGRES_DB:-family_finance}"
 POSTGRES_ADMIN_USER="${POSTGRES_ADMIN_USER:-finance_admin}"
 MIGRATION_DIR="${MIGRATION_DIR:-db/migrations}"
 
+DOCKER_BIN="${DOCKER_BIN:-$(command -v docker 2>/dev/null || true)}"
+[ -n "$DOCKER_BIN" ] || { echo "Docker CLI not found; set DOCKER_BIN" >&2; exit 4; }
+
+USE_SUDO=0
+if "$DOCKER_BIN" info >/dev/null 2>&1; then
+  USE_SUDO=0
+elif command -v sudo >/dev/null 2>&1 && sudo -n "$DOCKER_BIN" info >/dev/null 2>&1; then
+  USE_SUDO=1
+else
+  echo "Docker is not available non-interactively" >&2
+  exit 5
+fi
+
+docker_cmd() {
+  if [ "$USE_SUDO" -eq 1 ]; then
+    sudo -n "$DOCKER_BIN" "$@"
+  else
+    "$DOCKER_BIN" "$@"
+  fi
+}
+
 compose() {
-  docker compose -f "$COMPOSE_FILE" "$@"
+  docker_cmd compose -f "$COMPOSE_FILE" "$@"
 }
 
 sha256_file() {
