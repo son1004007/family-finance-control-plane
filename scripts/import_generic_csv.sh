@@ -64,7 +64,9 @@ case "$FILE_SHA$MAPPING_SHA" in *[!0-9a-fA-F]*) echo 'Invalid SHA-256 output' >&
 EXISTING="$(docker_cmd exec "$CONTAINER_NAME" psql -At -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" -c "SELECT status FROM ingest.import_batches WHERE source_type='$SOURCE_TYPE' AND file_sha256='$FILE_SHA' AND mapping_sha256='$MAPPING_SHA' ORDER BY import_batch_id DESC LIMIT 1;" 2>/dev/null || true)"
 if [ "$EXISTING" = 'completed' ]; then
   echo "IMPORT_ALREADY_APPLIED=PASS source_type=$SOURCE_TYPE file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
-  [ "$SOURCE_TYPE" = generic_csv ] && echo "GENERIC_CSV_IMPORT=PASS file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
+  if [ "$SOURCE_TYPE" = generic_csv ]; then
+    echo "GENERIC_CSV_IMPORT=PASS file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
+  fi
   exit 0
 fi
 
@@ -91,4 +93,7 @@ if printf '%s\n' "$OUTPUT" | grep -q '^IMPORT_BATCH=FAIL '; then
 fi
 printf '%s\n' "$OUTPUT" | grep -q '^IMPORT_BATCH=PASS ' || { echo 'Import completion marker missing' >&2; exit 11; }
 echo "GENERIC_IMPORT=PASS source_type=$SOURCE_TYPE file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
-[ "$SOURCE_TYPE" = generic_csv ] && echo "GENERIC_CSV_IMPORT=PASS file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
+if [ "$SOURCE_TYPE" = generic_csv ]; then
+  echo "GENERIC_CSV_IMPORT=PASS file_sha256=$FILE_SHA mapping_sha256=$MAPPING_SHA"
+fi
+exit 0
