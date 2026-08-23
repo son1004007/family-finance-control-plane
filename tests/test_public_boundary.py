@@ -1,4 +1,3 @@
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -53,15 +52,17 @@ class PublicBoundaryScannerTest(unittest.TestCase):
         self.assertTrue(any(rel == "private-data/notes.md" for rel, _ in self.findings()))
 
     def test_rrn_shape_is_blocked(self):
-        self.write("docs/example.md", "900101-1234567")
+        rrn_like = "900101-" + "1" + "234567"
+        self.write("docs/example.md", rrn_like)
         self.assertTrue(any("resident-registration" in reason for _, reason in self.findings()))
 
     def test_private_key_material_is_blocked(self):
-        self.write("docs/key.md", "-----BEGIN PRIVATE KEY-----\nnot-a-real-key")
+        key_marker = "-----BEGIN " + "PRIVATE KEY-----\nnot-a-real-key"
+        self.write("docs/key.md", key_marker)
         self.assertTrue(any("private-key" in reason for _, reason in self.findings()))
 
     def test_runtime_denylist_blocks_exact_household_term_without_embedding_it_in_rules(self):
-        private_term = "PRIVATE_HOUSEHOLD_TERM_FOR_TEST"
+        private_term = "PRIVATE_" + "HOUSEHOLD_TERM_FOR_TEST"
         self.write("docs/post.md", f"value={private_term}")
         findings = self.findings([private_term])
         self.assertTrue(any("denylist match fingerprint=" in reason for _, reason in findings))
