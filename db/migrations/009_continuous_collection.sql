@@ -173,6 +173,8 @@ LEFT JOIN latest_net_worth n USING (household_id, currency)
 LEFT JOIN latest_cash_flow c USING (household_id, currency);
 
 GRANT USAGE ON SCHEMA ingest TO finance_collector;
+GRANT USAGE ON SCHEMA finance TO finance_collector;
+GRANT SELECT ON finance.households TO finance_collector;
 GRANT SELECT, INSERT, UPDATE ON ingest.collection_sources TO finance_collector;
 GRANT SELECT, INSERT, UPDATE ON ingest.collection_runs TO finance_collector;
 GRANT SELECT, INSERT, UPDATE ON ingest.collection_observations TO finance_collector;
