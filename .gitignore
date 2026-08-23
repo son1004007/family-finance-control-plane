@@ -2,8 +2,12 @@
 .env
 .env.*
 secrets/
+.local/
 *.pem
 *.key
+client_secret*.json
+gmail-token*.json
+token.json
 
 # Never commit real/private financial data
 private/
