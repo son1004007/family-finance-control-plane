@@ -1,0 +1,31 @@
+{
+  "format_version": 1,
+  "source_name": "synthetic_bank_csv",
+  "household_label": "synthetic_import_household",
+  "account_label": "synthetic_import_checking",
+  "account_type": "checking",
+  "institution_type": "bank",
+  "institution_label": "synthetic_import_bank",
+  "currency": "KRW",
+  "encoding": "utf-8-sig",
+  "delimiter": ",",
+  "timezone_offset": "+09:00",
+  "occurred_at_format": "%Y-%m-%d %H:%M:%S",
+  "booked_on_format": "%Y-%m-%d",
+  "columns": {
+    "occurred_at": "occurred_at",
+    "booked_on": "booked_on",
+    "description": "description",
+    "counterparty": "counterparty",
+    "category": "category"
+  },
+  "amount": {
+    "mode": "signed",
+    "column": "amount",
+    "thousands_separator": "",
+    "decimal_separator": "."
+  },
+  "fingerprint_columns": [
+    "transaction_ref"
+  ]
+}
