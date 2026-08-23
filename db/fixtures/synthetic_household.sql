@@ -11,6 +11,38 @@ FROM finance.households
 CROSS JOIN (VALUES ('adult_1'), ('adult_2')) AS roles(role_label)
 WHERE label = 'synthetic_household';
 
+INSERT INTO finance.employment_snapshots(
+  household_id,
+  person_id,
+  employment_status,
+  employer_label,
+  role_label,
+  annual_gross_income,
+  monthly_net_income,
+  currency,
+  as_of_date,
+  source_label
+)
+SELECT
+  h.household_id,
+  p.person_id,
+  x.employment_status,
+  x.employer_label,
+  x.employment_role_label,
+  x.annual_gross_income,
+  x.monthly_net_income,
+  'KRW',
+  DATE '2026-01-31',
+  'synthetic_fixture'
+FROM finance.households h
+JOIN finance.persons p ON p.household_id = h.household_id
+JOIN (VALUES
+  ('adult_1', 'employed', 'synthetic_employer', 'backend_engineer', 60000000::numeric, 5200000::numeric),
+  ('adult_2', 'career_break', NULL, NULL, NULL::numeric, NULL::numeric)
+) AS x(person_role_label, employment_status, employer_label, employment_role_label, annual_gross_income, monthly_net_income)
+  ON x.person_role_label = p.role_label
+WHERE h.label = 'synthetic_household';
+
 INSERT INTO finance.institutions(institution_type, display_label)
 VALUES ('bank', 'synthetic_bank');
 
