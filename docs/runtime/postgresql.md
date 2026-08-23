@@ -24,6 +24,14 @@ sh scripts/migrate_compose.sh
 
 Do not put the real password in tracked shell scripts or documentation.
 
+By default Compose uses the named volume `finance_postgres_data`. A private runtime may replace only the data source with a host-specific persistent path without changing the public file:
+
+```bash
+export FINANCE_POSTGRES_DATA_SOURCE='/private/persistent/postgres/data'
+```
+
+The host-specific value is configuration, not public documentation. Docker Compose treats an absolute source as a bind mount while the default value remains a named volume for portable local/CI use.
+
 ## Schemas
 
 - `ingest`: import batches and raw-row normalization metadata
