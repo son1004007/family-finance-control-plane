@@ -1,0 +1,81 @@
+name: AI Access CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ai-reader-login-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      POSTGRES_DB: family_finance
+      POSTGRES_ADMIN_USER: finance_admin
+      POSTGRES_ADMIN_PASSWORD: ci-only-not-a-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate script syntax
+        run: sh -n scripts/provision_ai_reader_login.sh
+
+      - name: Start PostgreSQL 16
+        run: |
+          set -euo pipefail
+          docker compose up -d db
+          for i in $(seq 1 30); do
+            if docker compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose logs db
+          exit 1
+
+      - name: Apply migrations
+        run: sh scripts/migrate_compose.sh
+
+      - name: Provision reader twice to prove idempotency
+        run: |
+          set -euo pipefail
+          SECRET="$RUNNER_TEMP/ai-reader.env"
+          first="$(FINANCE_AI_SECRET_FILE="$SECRET" sh scripts/provision_ai_reader_login.sh)"
+          printf '%s\n' "$first"
+          printf '%s\n' "$first" | grep -q '^AI_READER_LOGIN_PROVISION=PASS role=finance_ai_client secret_created=yes$'
+
+          second="$(FINANCE_AI_SECRET_FILE="$SECRET" sh scripts/provision_ai_reader_login.sh)"
+          printf '%s\n' "$second"
+          printf '%s\n' "$second" | grep -q '^AI_READER_LOGIN_PROVISION=PASS role=finance_ai_client secret_created=no$'
+
+          test "$(stat -c '%a' "$SECRET")" = '600'
+
+      - name: Verify bounded database capabilities
+        run: |
+          set -euo pipefail
+          docker compose exec -T db psql -qAt -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" <<'SQL' > "$RUNNER_TEMP/role-check.txt"
+          SELECT rolsuper, rolcreatedb, rolcreaterole, rolreplication, rolbypassrls
+          FROM pg_roles WHERE rolname = 'finance_ai_client';
+          SELECT pg_has_role('finance_ai_client','finance_ai_reader','member');
+          SELECT pg_has_role('finance_ai_client','finance_ai_writer','member');
+          SELECT pg_has_role('finance_ai_client','finance_app','member');
+          SELECT has_table_privilege('finance_ai_client','analytics.v_current_employment','SELECT');
+          SELECT has_table_privilege('finance_ai_client','planning.goals','INSERT');
+          SQL
+          mapfile -t rows < "$RUNNER_TEMP/role-check.txt"
+          test "${rows[0]}" = 'f|f|f|f|f'
+          test "${rows[1]}" = 't'
+          test "${rows[2]}" = 'f'
+          test "${rows[3]}" = 'f'
+          test "${rows[4]}" = 't'
+          test "${rows[5]}" = 'f'
+          echo 'AI_READER_CAPABILITY_BOUNDARY=PASS'
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
