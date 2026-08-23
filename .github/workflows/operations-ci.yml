@@ -1,0 +1,69 @@
+name: Operations CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  operations-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Validate operations scripts
+        run: |
+          set -euo pipefail
+          sh -n scripts/backup_postgres_compose.sh
+          sh -n scripts/retention_cleanup.sh
+          grep -q '^BACKUP_KEEP="${BACKUP_KEEP:-14}"' scripts/backup_postgres_compose.sh
+          grep -q 'POSTGRES_BACKUP_RESTORE=PASS' scripts/backup_postgres_compose.sh
+          grep -q 'RETENTION_DRY_RUN=PASS' scripts/retention_cleanup.sh
+          grep -q 'RETENTION_CLEANUP=PASS' scripts/retention_cleanup.sh
+
+      - name: Verify retention is dry-run by default and apply is explicit
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/imports"
+          mkdir -p "$root/archive/old" "$root/archive/new" "$root/rejected/old" "$root/rejected/new"
+          printf old > "$root/archive/old/a.csv"
+          printf new > "$root/archive/new/b.csv"
+          printf old > "$root/rejected/old/c.xlsx"
+          printf new > "$root/rejected/new/d.xlsx"
+          touch -d '250 days ago' "$root/archive/old/a.csv"
+          touch -d '10 days ago' "$root/archive/new/b.csv"
+          touch -d '120 days ago' "$root/rejected/old/c.xlsx"
+          touch -d '10 days ago' "$root/rejected/new/d.xlsx"
+
+          dry="$(FINANCE_IMPORT_ROOT="$root" sh scripts/retention_cleanup.sh)"
+          printf '%s\n' "$dry"
+          printf '%s\n' "$dry" | grep -q 'archive_candidates=1 rejected_candidates=1 apply=0'
+          printf '%s\n' "$dry" | grep -q '^RETENTION_DRY_RUN=PASS$'
+          test -f "$root/archive/old/a.csv"
+          test -f "$root/rejected/old/c.xlsx"
+
+          apply="$(FINANCE_IMPORT_ROOT="$root" RETENTION_APPLY=1 sh scripts/retention_cleanup.sh)"
+          printf '%s\n' "$apply"
+          printf '%s\n' "$apply" | grep -q '^RETENTION_CLEANUP=PASS$'
+          test ! -e "$root/archive/old/a.csv"
+          test ! -e "$root/rejected/old/c.xlsx"
+          test -f "$root/archive/new/b.csv"
+          test -f "$root/rejected/new/d.xlsx"
+          echo 'RETENTION_CONTRACT=PASS'
+
+      - name: Verify backup recovery semantics remain fail-closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q -- '--format=custom' scripts/backup_postgres_compose.sh
+          grep -q -- '--exit-on-error' scripts/backup_postgres_compose.sh
+          grep -q "migration count mismatch after restore" scripts/backup_postgres_compose.sh
+          grep -q "transaction count mismatch after restore" scripts/backup_postgres_compose.sh
+          echo 'RECOVERY_CONTRACT=PASS'
