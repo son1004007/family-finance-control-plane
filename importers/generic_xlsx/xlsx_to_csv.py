@@ -33,8 +33,7 @@ def shared_strings(zf: zipfile.ZipFile) -> list[str]:
         return []
     values = []
     for si in root.findall(f"{{{NS_MAIN}}}si"):
-        text = "".join(node.text or "" for node in si.iter(f"{{{NS_MAIN}}}t"))
-        values.append(text)
+        values.append("".join(node.text or "" for node in si.iter(f"{{{NS_MAIN}}}t")))
     return values
 
 
@@ -43,20 +42,12 @@ def worksheet_path(zf: zipfile.ZipFile, requested: str | None) -> str:
     sheets = workbook.find(f"{{{NS_MAIN}}}sheets")
     if sheets is None:
         raise ValueError("XLSX workbook has no sheets")
-    selected = None
-    for sheet in list(sheets):
-        if requested is None or sheet.attrib.get("name") == requested:
-            selected = sheet
-            break
+    selected = next((sheet for sheet in list(sheets) if requested is None or sheet.attrib.get("name") == requested), None)
     if selected is None:
         raise ValueError(f"XLSX sheet not found: {requested}")
     rel_id = selected.attrib.get(f"{{{NS_REL}}}id")
     rels = ET.fromstring(zf.read("xl/_rels/workbook.xml.rels"))
-    target = None
-    for rel in rels.findall(f"{{{NS_PKG}}}Relationship"):
-        if rel.attrib.get("Id") == rel_id:
-            target = rel.attrib.get("Target")
-            break
+    target = next((rel.attrib.get("Target") for rel in rels.findall(f"{{{NS_PKG}}}Relationship") if rel.attrib.get("Id") == rel_id), None)
     if not target:
         raise ValueError("XLSX worksheet relationship is missing")
     target = target.lstrip("/")
@@ -67,9 +58,7 @@ def cell_text(cell: ET.Element, strings: list[str]) -> str:
     cell_type = cell.attrib.get("t")
     if cell_type == "inlineStr":
         inline = cell.find(f"{{{NS_MAIN}}}is")
-        if inline is None:
-            return ""
-        return "".join(node.text or "" for node in inline.iter(f"{{{NS_MAIN}}}t"))
+        return "" if inline is None else "".join(node.text or "" for node in inline.iter(f"{{{NS_MAIN}}}t"))
     value = cell.find(f"{{{NS_MAIN}}}v")
     raw = "" if value is None or value.text is None else value.text
     if cell_type == "s" and raw:
@@ -80,8 +69,7 @@ def cell_text(cell: ET.Element, strings: list[str]) -> str:
 
 
 def excel_serial_to_iso(raw: str, include_time: bool) -> str:
-    value = float(raw)
-    dt = datetime(1899, 12, 30) + timedelta(days=value)
+    dt = datetime(1899, 12, 30) + timedelta(days=float(raw))
     return dt.strftime("%Y-%m-%dT%H:%M:%S" if include_time else "%Y-%m-%d")
 
 
@@ -94,6 +82,10 @@ def convert(xlsx_path: Path, mapping_path: Path, output_path: Path) -> None:
         raise ValueError("xlsx.header_row must be >= 1")
     excel_date_columns = set(xlsx.get("excel_date_columns") or [])
     excel_datetime_columns = set(xlsx.get("excel_datetime_columns") or [])
+    delimiter = mapping.get("delimiter", ",")
+    quotechar = mapping.get("quotechar", '"')
+    if len(delimiter) != 1 or len(quotechar) != 1:
+        raise ValueError("delimiter and quotechar must be one character")
 
     with zipfile.ZipFile(xlsx_path) as zf:
         strings = shared_strings(zf)
@@ -107,8 +99,7 @@ def convert(xlsx_path: Path, mapping_path: Path, output_path: Path) -> None:
             row_no = int(row.attrib.get("r", "0"))
             cells: dict[int, str] = {}
             for cell in row.findall(f"{{{NS_MAIN}}}c"):
-                ref = cell.attrib.get("r", "")
-                idx = col_index(ref)
+                idx = col_index(cell.attrib.get("r", ""))
                 cells[idx] = cell_text(cell, strings)
                 max_col = max(max_col, idx)
             rows[row_no] = cells
@@ -127,7 +118,7 @@ def convert(xlsx_path: Path, mapping_path: Path, output_path: Path) -> None:
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
+        writer = csv.writer(handle, delimiter=delimiter, quotechar=quotechar)
         writer.writerow(headers)
         for row_no in sorted(number for number in rows if number > header_row):
             values = [rows[row_no].get(i, "") for i in range(len(headers))]
