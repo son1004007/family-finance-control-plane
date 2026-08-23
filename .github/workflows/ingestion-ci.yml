@@ -64,18 +64,25 @@ jobs:
           printf '%s\n' "$second" | grep -q '^GENERIC_XLSX_IMPORT=PASS '
           docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" <<'SQL'
           DO $$
-          DECLARE batches integer; txs integer; rows integer; original text; status text;
+          DECLARE batches integer; txs integer; source_rows integer; original text; batch_status text;
           BEGIN
-            SELECT COUNT(*), MAX(original_filename), MAX(status) INTO batches, original, status
-            FROM ingest.import_batches WHERE source_type='generic_xlsx' AND source_name='synthetic_bank_xlsx';
-            IF batches <> 1 OR original <> 'generic_bank.xlsx' OR status <> 'partial' THEN
-              RAISE EXCEPTION 'unexpected XLSX provenance: batches %, original %, status %', batches, original, status;
+            SELECT COUNT(*), MAX(b.original_filename), MAX(b.status)
+              INTO batches, original, batch_status
+            FROM ingest.import_batches b
+            WHERE b.source_type='generic_xlsx' AND b.source_name='synthetic_bank_xlsx';
+            IF batches <> 1 OR original <> 'generic_bank.xlsx' OR batch_status <> 'partial' THEN
+              RAISE EXCEPTION 'unexpected XLSX provenance: batches %, original %, status %', batches, original, batch_status;
             END IF;
-            SELECT COUNT(*) INTO rows FROM ingest.source_rows r JOIN ingest.import_batches b USING(import_batch_id)
-              WHERE b.source_type='generic_xlsx' AND b.source_name='synthetic_bank_xlsx';
-            IF rows <> 4 THEN RAISE EXCEPTION 'expected four XLSX source rows, got %', rows; END IF;
-            SELECT COUNT(*) INTO txs FROM finance.transactions t JOIN finance.accounts a USING(account_id) JOIN finance.households h USING(household_id)
-              WHERE h.label='synthetic_xlsx_household' AND a.account_label='synthetic_xlsx_checking';
+            SELECT COUNT(*) INTO source_rows
+            FROM ingest.source_rows r
+            JOIN ingest.import_batches b USING(import_batch_id)
+            WHERE b.source_type='generic_xlsx' AND b.source_name='synthetic_bank_xlsx';
+            IF source_rows <> 4 THEN RAISE EXCEPTION 'expected four XLSX source rows, got %', source_rows; END IF;
+            SELECT COUNT(*) INTO txs
+            FROM finance.transactions t
+            JOIN finance.accounts a USING(account_id)
+            JOIN finance.households h USING(household_id)
+            WHERE h.label='synthetic_xlsx_household' AND a.account_label='synthetic_xlsx_checking';
             IF txs <> 3 THEN RAISE EXCEPTION 'expected three XLSX normalized txs, got %', txs; END IF;
           END $$;
           SQL
