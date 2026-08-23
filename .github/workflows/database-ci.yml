@@ -21,6 +21,17 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Validate shell scripts
+        run: |
+          set -euo pipefail
+          sh -n scripts/migrate_compose.sh
+          sh -n scripts/backup_postgres_compose.sh
+          sh -n scripts/capture_household_baseline.sh
+          if grep -Eq '(^|[[:space:]])eval([[:space:]]|$)' scripts/capture_household_baseline.sh; then
+            echo '::error::interactive baseline capture must not eval user input'
+            exit 1
+          fi
+
       - name: Start PostgreSQL 16
         run: |
           set -euo pipefail
@@ -58,6 +69,83 @@ jobs:
           docker compose exec -T db psql -v ON_ERROR_STOP=1 \
             -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
             < db/tests/assert_synthetic.sql
+
+      - name: Verify NAS-local baseline capture is idempotent
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_capture() {
+            LIQUID_CASH="$1" \
+            BASELINE_NONINTERACTIVE=1 \
+            BASELINE_AS_OF_DATE=2026-02-01 \
+            BASELINE_TIMEZONE_OFFSET=+09:00 \
+            ADULT1_STATUS=employed \
+            ADULT1_ANNUAL_GROSS=55000000 \
+            ADULT1_MONTHLY_NET=4000000 \
+            ADULT2_STATUS=career_break \
+            HOUSING_ASSET=200000000 \
+            INVESTMENT_ASSETS=20000000 \
+            OTHER_ASSETS=5000000 \
+            TOTAL_DEBT=30000000 \
+            MONTHLY_RECURRING_SPEND=3000000 \
+            sh scripts/capture_household_baseline.sh
+          }
+
+          run_capture 10000000
+          run_capture 11000000
+
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" <<'SQL'
+          DO $$
+          DECLARE
+            income NUMERIC;
+            monthly_net NUMERIC;
+            net_worth NUMERIC;
+            recurring NUMERIC;
+            active_baseline_rows INTEGER;
+          BEGIN
+            SELECT i.annual_gross_income, i.monthly_net_income
+              INTO income, monthly_net
+            FROM analytics.v_current_household_income_by_currency i
+            JOIN finance.households h USING (household_id)
+            WHERE h.label = 'primary_household' AND i.currency = 'KRW';
+
+            IF income IS DISTINCT FROM 55000000::numeric OR monthly_net IS DISTINCT FROM 4000000::numeric THEN
+              RAISE EXCEPTION 'unexpected captured income: annual %, monthly %', income, monthly_net;
+            END IF;
+
+            SELECT n.net_worth INTO net_worth
+            FROM analytics.v_net_worth_by_currency n
+            JOIN finance.households h USING (household_id)
+            WHERE h.label = 'primary_household' AND n.currency = 'KRW';
+
+            IF net_worth IS DISTINCT FROM 206000000::numeric THEN
+              RAISE EXCEPTION 'unexpected captured net worth: %', net_worth;
+            END IF;
+
+            SELECT r.monthly_fixed_obligations INTO recurring
+            FROM analytics.v_active_recurring_obligations r
+            JOIN finance.households h USING (household_id)
+            WHERE h.label = 'primary_household' AND r.currency = 'KRW';
+
+            IF recurring IS DISTINCT FROM 3000000::numeric THEN
+              RAISE EXCEPTION 'unexpected captured recurring spend: %', recurring;
+            END IF;
+
+            SELECT COUNT(*) INTO active_baseline_rows
+            FROM finance.recurring_obligations r
+            JOIN finance.households h USING (household_id)
+            WHERE h.label = 'primary_household'
+              AND r.label = 'baseline_total_monthly_spend'
+              AND r.active;
+
+            IF active_baseline_rows <> 1 THEN
+              RAISE EXCEPTION 'expected one active baseline recurring row, got %', active_baseline_rows;
+            END IF;
+          END
+          $$;
+          SQL
+          echo 'BASELINE_CAPTURE_IDEMPOTENCY=PASS'
 
       - name: Verify AI reader can query
         run: |
