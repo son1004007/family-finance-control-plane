@@ -111,9 +111,9 @@ SELECT
   net_cash_flow,
   transaction_count,
   COUNT(*) OVER w12 AS history_months,
-  SUM(net_cash_flow) OVER w3::NUMERIC(20,2) AS rolling_3m_net_cash_flow,
-  SUM(net_cash_flow) OVER w6::NUMERIC(20,2) AS rolling_6m_net_cash_flow,
-  SUM(net_cash_flow) OVER w12::NUMERIC(20,2) AS rolling_12m_net_cash_flow
+  (SUM(net_cash_flow) OVER w3)::NUMERIC(20,2) AS rolling_3m_net_cash_flow,
+  (SUM(net_cash_flow) OVER w6)::NUMERIC(20,2) AS rolling_6m_net_cash_flow,
+  (SUM(net_cash_flow) OVER w12)::NUMERIC(20,2) AS rolling_12m_net_cash_flow
 FROM analytics.v_monthly_cash_flow_calendar
 WINDOW
   w3 AS (PARTITION BY household_id, currency ORDER BY month ROWS BETWEEN 2 PRECEDING AND CURRENT ROW),
