@@ -46,6 +46,16 @@ for fixture in \
   docker exec -i "$FINANCE_DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" < "$fixture"
 done
 
+docker exec -i "$FINANCE_DB_CONTAINER" psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" <<'SQL'
+INSERT INTO ingest.collection_sources(
+  household_id, source_key, source_type, display_label, authority_level,
+  cadence_seconds, freshness_sla_seconds, last_attempt_at, last_success_at
+)
+SELECT household_id, 'synthetic_mail', 'gmail', 'Synthetic mailbox', 'reconciling',
+       900, 3600, now(), now()
+FROM finance.households WHERE label='synthetic_household';
+SQL
+
 sh scripts/import_generic_csv.sh tests/fixtures/synthetic/generic_bank.csv tests/fixtures/synthetic/generic_bank_mapping.json >/dev/null
 
 REPO_ABS="$(pwd -P)"
@@ -86,13 +96,17 @@ def rows(result):
 async def main():
     async with Client('http://127.0.0.1:8000/mcp') as client:
         tools = await client.list_tools()
-        assert len(tools.tools) == 7
+        assert len(tools.tools) == 9
         snap = rows(await client.call_tool('financial_snapshot', {'household_label':'synthetic_household','currency':'KRW'}))
         assert snap[0]['net_worth'] == '18000000.00'
         reserve = rows(await client.call_tool('emergency_reserve', {'household_label':'synthetic_household','currency':'KRW'}))
         assert reserve[0]['coverage_months'] == '100.00'
         scenarios = rows(await client.call_tool('scenario_outcomes', {'household_label':'synthetic_household','currency':'KRW'}))
         assert scenarios[0]['annual_net_after_modeled_costs'] == '60520000.00'
+        freshness = rows(await client.call_tool('data_freshness', {'household_label':'synthetic_household'}))
+        assert freshness[0]['freshness_status'] == 'fresh'
+        change = rows(await client.call_tool('change_summary', {'household_label':'synthetic_household','currency':'KRW'}))
+        assert change[0]['net_worth_change'] == '3000000.00'
 
 asyncio.run(main())
 PY
@@ -102,10 +116,11 @@ then
 fi
 
 migration_count="$(docker exec "$FINANCE_DB_CONTAINER" psql -qAt -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" -c 'SELECT COUNT(*) FROM meta.schema_migrations;')"
-[ "$migration_count" -ge 8 ] || { echo "unexpected migration count: $migration_count" >&2; exit 5; }
+[ "$migration_count" -ge 9 ] || { echo "unexpected migration count: $migration_count" >&2; exit 5; }
 
 echo "SYNTHETIC_E2E_MIGRATIONS=$migration_count"
 echo 'SYNTHETIC_E2E_IMPORTS=PASS'
 echo 'SYNTHETIC_E2E_ANALYTICS=PASS'
+echo 'SYNTHETIC_E2E_CONTINUOUS_COLLECTION=PASS'
 echo 'SYNTHETIC_E2E_MCP=PASS'
 echo 'SYNTHETIC_E2E=PASS'
