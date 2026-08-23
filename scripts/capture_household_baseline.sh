@@ -46,27 +46,43 @@ docker_cmd() {
   fi
 }
 
-prompt_if_empty() {
-  var_name="$1"
+prompt_value() {
+  current="$1"
   label="$2"
   default_value="${3:-}"
-  eval "current=\${$var_name:-}"
-  [ -n "$current" ] && return 0
-  if [ "$NONINTERACTIVE" = '1' ]; then
-    [ -n "$default_value" ] || { echo "Missing required value: $var_name" >&2; exit 20; }
-    eval "$var_name=\$default_value"
+  required="${4:-1}"
+
+  if [ -n "$current" ]; then
+    printf '%s' "$current"
     return 0
   fi
+
+  if [ "$NONINTERACTIVE" = '1' ]; then
+    if [ -n "$default_value" ] || [ "$required" = '0' ]; then
+      printf '%s' "$default_value"
+      return 0
+    fi
+    echo "Missing required noninteractive value: $label" >&2
+    exit 20
+  fi
+
   if [ -n "$default_value" ]; then
     printf '%s [%s]: ' "$label" "$default_value" >&2
+  elif [ "$required" = '0' ]; then
+    printf '%s [blank if none]: ' "$label" >&2
   else
     printf '%s: ' "$label" >&2
   fi
+
   IFS= read -r entered
   if [ -n "$entered" ]; then
-    eval "$var_name=\$entered"
+    printf '%s' "$entered"
   else
-    eval "$var_name=\$default_value"
+    if [ -z "$default_value" ] && [ "$required" = '1' ]; then
+      echo "A value is required: $label" >&2
+      exit 20
+    fi
+    printf '%s' "$default_value"
   fi
 }
 
@@ -102,25 +118,19 @@ printf '%s\n' 'Values are sent only to the local PostgreSQL container; this scri
 printf '%s\n' 'Use mutually exclusive asset amounts to avoid double counting.'
 
 TODAY="$(date +%F)"
-prompt_if_empty BASELINE_AS_OF_DATE 'As-of date (YYYY-MM-DD)' "$TODAY"
-prompt_if_empty ADULT1_STATUS 'adult_1 employment status' 'employed'
-prompt_if_empty ADULT1_ANNUAL_GROSS 'adult_1 annual gross income'
-prompt_if_empty ADULT1_MONTHLY_NET 'adult_1 monthly net income'
-prompt_if_empty ADULT2_STATUS 'adult_2 employment status' 'career_break'
-
-if [ -z "${ADULT2_ANNUAL_GROSS+x}" ]; then
-  if [ "$NONINTERACTIVE" = '1' ]; then ADULT2_ANNUAL_GROSS=''; else printf 'adult_2 annual gross income [blank if none]: ' >&2; IFS= read -r ADULT2_ANNUAL_GROSS; fi
-fi
-if [ -z "${ADULT2_MONTHLY_NET+x}" ]; then
-  if [ "$NONINTERACTIVE" = '1' ]; then ADULT2_MONTHLY_NET=''; else printf 'adult_2 monthly net income [blank if none]: ' >&2; IFS= read -r ADULT2_MONTHLY_NET; fi
-fi
-
-prompt_if_empty LIQUID_CASH 'Liquid cash and demand/savings deposits total'
-prompt_if_empty HOUSING_ASSET 'Housing-related asset value (deposit or owned-home value, no overlap)'
-prompt_if_empty INVESTMENT_ASSETS 'Investment assets total (exclude cash counted above)'
-prompt_if_empty OTHER_ASSETS 'Other assets total (exclude all above)'
-prompt_if_empty TOTAL_DEBT 'Outstanding debt principal total'
-prompt_if_empty MONTHLY_RECURRING_SPEND 'Ordinary recurring monthly household spend'
+BASELINE_AS_OF_DATE="$(prompt_value "${BASELINE_AS_OF_DATE:-}" 'As-of date (YYYY-MM-DD)' "$TODAY")"
+ADULT1_STATUS="$(prompt_value "${ADULT1_STATUS:-}" 'adult_1 employment status' 'employed')"
+ADULT1_ANNUAL_GROSS="$(prompt_value "${ADULT1_ANNUAL_GROSS:-}" 'adult_1 annual gross income')"
+ADULT1_MONTHLY_NET="$(prompt_value "${ADULT1_MONTHLY_NET:-}" 'adult_1 monthly net income')"
+ADULT2_STATUS="$(prompt_value "${ADULT2_STATUS:-}" 'adult_2 employment status' 'career_break')"
+ADULT2_ANNUAL_GROSS="$(prompt_value "${ADULT2_ANNUAL_GROSS:-}" 'adult_2 annual gross income' '' 0)"
+ADULT2_MONTHLY_NET="$(prompt_value "${ADULT2_MONTHLY_NET:-}" 'adult_2 monthly net income' '' 0)"
+LIQUID_CASH="$(prompt_value "${LIQUID_CASH:-}" 'Liquid cash and demand/savings deposits total')"
+HOUSING_ASSET="$(prompt_value "${HOUSING_ASSET:-}" 'Housing-related asset value (deposit or owned-home value, no overlap)')"
+INVESTMENT_ASSETS="$(prompt_value "${INVESTMENT_ASSETS:-}" 'Investment assets total (exclude cash counted above)')"
+OTHER_ASSETS="$(prompt_value "${OTHER_ASSETS:-}" 'Other assets total (exclude all above)')"
+TOTAL_DEBT="$(prompt_value "${TOTAL_DEBT:-}" 'Outstanding debt principal total')"
+MONTHLY_RECURRING_SPEND="$(prompt_value "${MONTHLY_RECURRING_SPEND:-}" 'Ordinary recurring monthly household spend')"
 
 validate_date "$BASELINE_AS_OF_DATE"
 validate_status "$ADULT1_STATUS"
