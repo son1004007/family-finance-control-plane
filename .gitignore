@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.*
+secrets/
+*.pem
+*.key
+
+# Never commit real/private financial data
+private/
+raw/
+data/raw/
+data/private/
+imports/private/
+exports/private/
+backups/
+*.dump
+*.backup
+*.sql.gz
+
+# Local runtime
+.venv/
+__pycache__/
+.pytest_cache/
+.idea/
+.vscode/
+.DS_Store
