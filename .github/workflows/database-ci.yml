@@ -43,7 +43,9 @@ jobs:
           set -euo pipefail
           output="$(sh scripts/migrate_compose.sh)"
           printf '%s\n' "$output"
-          test "$(printf '%s\n' "$output" | grep -c '^SKIP ')" -eq 3
+          expected="$(find db/migrations -maxdepth 1 -type f -name '*.sql' | wc -l | tr -d ' ')"
+          actual="$(printf '%s\n' "$output" | grep -c '^SKIP ')"
+          test "$actual" -eq "$expected"
 
       - name: Load synthetic fixture
         run: |
@@ -61,7 +63,7 @@ jobs:
         run: |
           docker compose exec -T db psql -v ON_ERROR_STOP=1 \
             -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
-            -c "SET ROLE finance_ai_reader; SELECT COUNT(*) FROM analytics.v_monthly_cash_flow;"
+            -c "SET ROLE finance_ai_reader; SELECT COUNT(*) FROM analytics.v_monthly_cash_flow; SELECT COUNT(*) FROM analytics.v_current_employment; SELECT COUNT(*) FROM analytics.v_current_household_income_by_currency;"
 
       - name: Verify AI reader cannot mutate
         shell: bash
@@ -87,6 +89,13 @@ jobs:
               -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
               -c "SET ROLE finance_ai_writer; INSERT INTO finance.accounts(household_id, account_type, account_label) SELECT household_id, 'test', 'writer_must_not_touch_ledger' FROM finance.households LIMIT 1;"; then
             echo '::error::finance_ai_writer unexpectedly mutated finance ledger'
+            exit 1
+          fi
+
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+              -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_ai_writer; INSERT INTO finance.employment_snapshots(household_id, person_id, employment_status, as_of_date) SELECT h.household_id, p.person_id, 'employed', CURRENT_DATE FROM finance.households h JOIN finance.persons p USING (household_id) LIMIT 1;"; then
+            echo '::error::finance_ai_writer unexpectedly mutated employment facts'
             exit 1
           fi
           echo 'AI_WRITER_PLANNING_BOUNDARY=PASS'
