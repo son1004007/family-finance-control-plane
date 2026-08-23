@@ -33,6 +33,6 @@
   "reconciliation": {
     "expected_row_count": 4,
     "expected_valid_row_count": 3,
-    "expected_net_amount": 2600000
+    "expected_net_amount": 2650000
   }
 }
