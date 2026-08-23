@@ -33,14 +33,18 @@ jobs:
             echo '::error::arbitrary SQL-like MCP tool detected'
             exit 1
           fi
-          python3 - <<'PY'
-          import yaml
-          with open('compose.mcp.yaml', encoding='utf-8') as f:
-              cfg=yaml.safe_load(f)
+          export FINANCE_MCP_DB_USER=ci_mcp_reader
+          export FINANCE_MCP_DB_PASSWORD=ci-placeholder-only
+          docker compose -f compose.yaml -f compose.mcp.yaml config --format json > "$RUNNER_TEMP/mcp-compose.json"
+          python3 - "$RUNNER_TEMP/mcp-compose.json" <<'PY'
+          import json, sys
+          cfg=json.load(open(sys.argv[1], encoding='utf-8'))
           mcp=cfg['services']['mcp']
           assert not mcp.get('ports'), 'MCP must not publish a host port'
           assert mcp.get('read_only') is True
           assert 'ALL' in mcp.get('cap_drop', [])
+          networks=mcp.get('networks', {})
+          assert 'finance_internal' in networks
           print('MCP_COMPOSE_BOUNDARY=PASS')
           PY
 
@@ -164,7 +168,7 @@ jobs:
           fi
           echo 'MCP_DATABASE_BOUNDARY=PASS'
 
-      - name: Ensure logs contain no known synthetic sensitive payload text
+      - name: Ensure logs contain no known synthetic financial payload text
         shell: bash
         run: |
           set -euo pipefail
