@@ -21,12 +21,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Validate shell scripts
+      - name: Validate shell and Python scripts
         run: |
           set -euo pipefail
           sh -n scripts/migrate_compose.sh
           sh -n scripts/backup_postgres_compose.sh
           sh -n scripts/capture_household_baseline.sh
+          sh -n scripts/import_generic_csv.sh
+          python3 -m py_compile importers/generic_csv/emit_copy_sql.py
           if grep -Eq '(^|[[:space:]])eval([[:space:]]|$)' scripts/capture_household_baseline.sh; then
             echo '::error::interactive baseline capture must not eval user input'
             exit 1
@@ -63,12 +65,79 @@ jobs:
           docker compose exec -T db psql -v ON_ERROR_STOP=1 \
             -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
             < db/fixtures/synthetic_household.sql
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/fixtures/synthetic_metrics.sql
 
       - name: Verify deterministic analytics
         run: |
           docker compose exec -T db psql -v ON_ERROR_STOP=1 \
             -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
             < db/tests/assert_synthetic.sql
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/tests/assert_metrics.sql
+
+      - name: Verify generic CSV import provenance and deduplication
+        shell: bash
+        run: |
+          set -euo pipefail
+          first="$(sh scripts/import_generic_csv.sh \
+            tests/fixtures/synthetic/generic_bank.csv \
+            tests/fixtures/synthetic/generic_bank_mapping.json)"
+          printf '%s\n' "$first"
+          printf '%s\n' "$first" | grep -q '^GENERIC_CSV_IMPORT=PASS '
+          printf '%s\n' "$first" | grep -q 'errors=1 status=partial'
+
+          second="$(sh scripts/import_generic_csv.sh \
+            tests/fixtures/synthetic/generic_bank.csv \
+            tests/fixtures/synthetic/generic_bank_mapping.json)"
+          printf '%s\n' "$second"
+          printf '%s\n' "$second" | grep -q '^GENERIC_CSV_IMPORT=PASS '
+
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" <<'SQL'
+          DO $$
+          DECLARE
+            batches INTEGER;
+            source_rows INTEGER;
+            transactions INTEGER;
+            errors INTEGER;
+          BEGIN
+            SELECT COUNT(*), COALESCE(MAX(error_count), 0)
+              INTO batches, errors
+            FROM ingest.import_batches
+            WHERE source_type = 'generic_csv'
+              AND source_name = 'synthetic_bank_csv';
+
+            IF batches <> 1 OR errors <> 1 THEN
+              RAISE EXCEPTION 'unexpected import provenance: batches %, errors %', batches, errors;
+            END IF;
+
+            SELECT COUNT(*) INTO source_rows
+            FROM ingest.source_rows r
+            JOIN ingest.import_batches b USING (import_batch_id)
+            WHERE b.source_type = 'generic_csv'
+              AND b.source_name = 'synthetic_bank_csv';
+
+            IF source_rows <> 4 THEN
+              RAISE EXCEPTION 'expected four source rows, got %', source_rows;
+            END IF;
+
+            SELECT COUNT(*) INTO transactions
+            FROM finance.transactions t
+            JOIN finance.accounts a USING (account_id)
+            JOIN finance.households h USING (household_id)
+            WHERE h.label = 'synthetic_import_household'
+              AND a.account_label = 'synthetic_import_checking';
+
+            IF transactions <> 3 THEN
+              RAISE EXCEPTION 'expected three normalized transactions after re-import, got %', transactions;
+            END IF;
+          END
+          $$;
+          SQL
+          echo 'GENERIC_CSV_DEDUPLICATION=PASS'
 
       - name: Verify NAS-local baseline capture is idempotent
         shell: bash
@@ -147,11 +216,11 @@ jobs:
           SQL
           echo 'BASELINE_CAPTURE_IDEMPOTENCY=PASS'
 
-      - name: Verify AI reader can query
+      - name: Verify AI reader can query curated facts and metrics
         run: |
           docker compose exec -T db psql -v ON_ERROR_STOP=1 \
             -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
-            -c "SET ROLE finance_ai_reader; SELECT COUNT(*) FROM analytics.v_monthly_cash_flow; SELECT COUNT(*) FROM analytics.v_current_employment; SELECT COUNT(*) FROM analytics.v_current_household_income_by_currency;"
+            -c "SET ROLE finance_ai_reader; SELECT COUNT(*) FROM analytics.v_monthly_cash_flow; SELECT COUNT(*) FROM analytics.v_current_employment; SELECT COUNT(*) FROM analytics.v_current_household_income_by_currency; SELECT COUNT(*) FROM analytics.v_household_financial_snapshot_by_currency; SELECT COUNT(*) FROM analytics.v_rolling_cash_flow;"
 
       - name: Verify AI reader cannot mutate
         shell: bash
