@@ -157,15 +157,18 @@ CAN_INSERT="$(docker_cmd exec "$CONTAINER_NAME" psql -qAt -v ON_ERROR_STOP=1 \
 [ "$IS_WRITER" = 'f' ] || { echo 'AI login unexpectedly has writer/app membership' >&2; exit 32; }
 [ "$CAN_INSERT" = 'f' ] || { echo 'AI login unexpectedly has INSERT privilege' >&2; exit 33; }
 
-# Verify the generated/stored password through PostgreSQL TCP authentication inside
-# the private DB container. Do not put the password in command-line arguments.
-PGPASSWORD="$AI_DB_PASSWORD"
-export PGPASSWORD
-LOGIN_CHECK="$(docker_cmd exec -e PGPASSWORD "$CONTAINER_NAME" \
-  psql -h 127.0.0.1 -qAt -v ON_ERROR_STOP=1 \
-  -U "$AI_DB_USER" -d "$POSTGRES_DB" \
-  -c "SELECT current_user; SHOW transaction_read_only; SELECT COUNT(*) FROM analytics.v_current_employment;" 2>/dev/null)"
-unset PGPASSWORD AI_DB_PASSWORD
+# Verify password authentication over TCP inside the DB container. The password is
+# sent through stdin, never a host process argument or sudo-preserved environment.
+LOGIN_CHECK="$(
+  printf '%s\n' "$AI_DB_PASSWORD" | docker_cmd exec -i "$CONTAINER_NAME" sh -c '
+    IFS= read -r PGPASSWORD
+    export PGPASSWORD
+    exec psql -h 127.0.0.1 -qAt -v ON_ERROR_STOP=1 \
+      -U "$1" -d "$2" \
+      -c "SELECT current_user; SHOW transaction_read_only; SELECT COUNT(*) FROM analytics.v_current_employment;"
+  ' sh "$AI_DB_USER" "$POSTGRES_DB" 2>/dev/null
+)"
+unset AI_DB_PASSWORD
 
 printf '%s\n' "$LOGIN_CHECK" | grep -qx "$AI_DB_USER" || {
   echo 'AI reader TCP login did not authenticate as the expected role' >&2
