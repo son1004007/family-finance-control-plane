@@ -30,6 +30,12 @@ class GmailSettings:
 
 
 @dataclass(frozen=True)
+class DriveAppDataSettings:
+    file_prefix: str
+    max_files_per_cycle: int
+
+
+@dataclass(frozen=True)
 class SourceConfig:
     household_label: str
     source_key: str
@@ -39,6 +45,7 @@ class SourceConfig:
     cadence_seconds: int
     freshness_sla_seconds: int
     gmail: GmailSettings | None = None
+    drive_appdata: DriveAppDataSettings | None = None
 
 
 @dataclass(frozen=True)
@@ -100,6 +107,7 @@ def _parse_source(raw: dict[str, Any]) -> SourceConfig:
         raise ValueError("freshness_sla_seconds must be between 300 and 7776000")
 
     gmail = None
+    drive_appdata = None
     if source_type == "gmail":
         settings = raw.get("gmail")
         if not isinstance(settings, dict):
@@ -116,6 +124,20 @@ def _parse_source(raw: dict[str, Any]) -> SourceConfig:
             max_initial_messages=maximum,
             rules=tuple(_parse_rule(item) for item in rules_raw),
         )
+    elif source_type == "drive_appdata":
+        settings = raw.get("drive_appdata")
+        if not isinstance(settings, dict):
+            raise ValueError("drive_appdata source requires a drive_appdata object")
+        prefix = _require_string(settings, "file_prefix")
+        if len(prefix) > 80 or not re.fullmatch(r"[A-Za-z0-9._-]+", prefix):
+            raise ValueError("drive_appdata.file_prefix must be a safe short filename prefix")
+        maximum = int(settings.get("max_files_per_cycle", 100))
+        if maximum < 1 or maximum > 500:
+            raise ValueError("max_files_per_cycle must be between 1 and 500")
+        drive_appdata = DriveAppDataSettings(
+            file_prefix=prefix,
+            max_files_per_cycle=maximum,
+        )
     else:
         raise ValueError(f"unsupported source_type: {source_type}")
 
@@ -128,6 +150,7 @@ def _parse_source(raw: dict[str, Any]) -> SourceConfig:
         cadence_seconds=cadence,
         freshness_sla_seconds=freshness,
         gmail=gmail,
+        drive_appdata=drive_appdata,
     )
 
 
