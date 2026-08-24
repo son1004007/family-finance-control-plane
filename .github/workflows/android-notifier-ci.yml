@@ -32,7 +32,9 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${ANDROID_HOME:-}"
+          set +o pipefail
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          set -o pipefail
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Download verified Gradle
