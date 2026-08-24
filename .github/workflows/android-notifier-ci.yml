@@ -1,0 +1,56 @@
+name: Android Notifier CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Verify privacy contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -R --line-number -E 'rawText|rawTitle|notificationText|notificationTitle|accountNumber|cardNumber' android-notifier/app/src/main/java
+          grep -q 'android.permission.BIND_NOTIFICATION_LISTENER_SERVICE' android-notifier/app/src/main/AndroidManifest.xml
+          grep -q 'https://www.googleapis.com/auth/drive.appdata' android-notifier/app/src/main/java/io/familyfinance/notifier/DriveRelay.kt
+          ! grep -R --line-number 'https://www.googleapis.com/auth/drive"' android-notifier/app/src/main
+          ! grep -R --line-number -E 'Log\.(d|i|v|w|e)|println\(' android-notifier/app/src/main/java
+
+      - name: Install Android SDK 35
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_HOME:-}"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Download verified Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          curl -fsSLo gradle.zip https://services.gradle.org/distributions/gradle-8.10.2-bin.zip
+          curl -fsSLo gradle.zip.sha256 https://services.gradle.org/distributions/gradle-8.10.2-bin.zip.sha256
+          printf '%s  %s\n' "$(cat gradle.zip.sha256)" gradle.zip | sha256sum -c -
+          unzip -q gradle.zip
+          echo "$RUNNER_TEMP/gradle-8.10.2/bin" >> "$GITHUB_PATH"
+
+      - name: Build debug APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          java -version
+          gradle -p android-notifier --no-daemon :app:assembleDebug
+          test -s android-notifier/app/build/outputs/apk/debug/app-debug.apk
+          echo 'ANDROID_NOTIFIER_BUILD=PASS'
