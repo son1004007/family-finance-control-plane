@@ -7,6 +7,7 @@ secrets/
 *.key
 client_secret*.json
 gmail-token*.json
+drive-appdata-token*.json
 token.json
 
 # Never commit real/private financial data
@@ -28,3 +29,10 @@ __pycache__/
 .idea/
 .vscode/
 .DS_Store
+
+# Android notifier local/build output
+android-notifier/.gradle/
+android-notifier/local.properties
+android-notifier/**/build/
+*.jks
+*.keystore
