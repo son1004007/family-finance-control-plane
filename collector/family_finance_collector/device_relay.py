@@ -19,6 +19,12 @@ ALLOWED_EVENT_TYPES = {
     "financial_notification",
 }
 ALLOWED_DIRECTIONS = {"debit", "credit", "neutral", "unknown"}
+KNOWN_PROVIDER_PACKAGES = {
+    "com.kakaobank.channel": "kakaobank",
+    "com.kbankwith.smartbank": "kbank",
+    "com.wooribank.smart.npib": "wooribank",
+    "com.coupang.mobile": "coupang",
+}
 FORBIDDEN_EVENT_KEYS = {
     "raw_text",
     "raw_title",
@@ -66,6 +72,15 @@ def _hash_device_id(device_id: str) -> str:
     return hashlib.sha256(device_id.encode("utf-8")).hexdigest()
 
 
+def _optional_short_string(raw: dict[str, Any], key: str, *, max_length: int = 120) -> str | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip() or len(value) > max_length:
+        raise ValueError(f"{key} must be a short normalized string")
+    return value.strip()
+
+
 def _parse_event(raw: Any, *, batch_id: str, device_id: str) -> Observation:
     if not isinstance(raw, dict):
         raise ValueError("each event must be an object")
@@ -82,21 +97,18 @@ def _parse_event(raw: Any, *, batch_id: str, device_id: str) -> Observation:
         raise ValueError(f"unsupported direction: {direction}")
 
     source_app = _require_string(raw, "source_app", max_length=200)
+    provider_key = _require_string(raw, "provider_key", max_length=64)
+    expected_provider = KNOWN_PROVIDER_PACKAGES.get(source_app)
+    if expected_provider is None or provider_key != expected_provider:
+        raise ValueError("source_app/provider_key is not an approved finance provider pair")
+
     currency = str(raw.get("currency", "KRW")).strip().upper()
     if len(currency) != 3 or not currency.isalpha():
         raise ValueError("currency must be a three-letter code")
 
-    merchant_key = raw.get("merchant_key")
-    if merchant_key is not None:
-        if not isinstance(merchant_key, str) or not merchant_key.strip() or len(merchant_key) > 120:
-            raise ValueError("merchant_key must be a short normalized string")
-        merchant_key = merchant_key.strip()
-
-    account_alias = raw.get("account_alias")
-    if account_alias is not None:
-        if not isinstance(account_alias, str) or not account_alias.strip() or len(account_alias) > 120:
-            raise ValueError("account_alias must be a short local alias")
-        account_alias = account_alias.strip()
+    merchant_key = _optional_short_string(raw, "merchant_key")
+    account_alias = _optional_short_string(raw, "account_alias")
+    balance_after = _parse_amount(raw.get("balance_after"))
 
     confidence = raw.get("confidence")
     if confidence is not None:
@@ -115,12 +127,15 @@ def _parse_event(raw: Any, *, batch_id: str, device_id: str) -> Observation:
         "batch_id": batch_id,
         "device_id_hash": _hash_device_id(device_id),
         "source_app": source_app,
+        "provider_key": provider_key,
         "direction": direction,
     }
     if merchant_key is not None:
         payload["merchant_key"] = merchant_key
     if account_alias is not None:
         payload["account_alias"] = account_alias
+    if balance_after is not None:
+        payload["balance_after"] = str(balance_after)
     if confidence is not None:
         payload["confidence"] = confidence
 
@@ -129,7 +144,7 @@ def _parse_event(raw: Any, *, batch_id: str, device_id: str) -> Observation:
         event_at_ms=occurred_at_ms,
         observation_type=event_type,
         authority_level="supplemental",
-        subject_key=source_app,
+        subject_key=provider_key,
         amount=amount,
         currency=currency,
         normalized_payload=payload,
