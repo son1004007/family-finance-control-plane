@@ -130,17 +130,6 @@ def _collect_drive_appdata_source(
             imported=imported,
             ignored=ignored,
         )
-        # Acknowledge only after the staging transaction and source success marker are durable.
-        # If deletion fails, the next cycle safely deduplicates by external_event_hash.
-        drive_client.acknowledge(batch.processed_file_ids)
-        LOGGER.info(
-            "collector_source_complete source=%s files=%d seen=%d imported=%d ignored=%d",
-            source.source_key,
-            batch.files_seen,
-            len(batch.observations),
-            imported,
-            ignored,
-        )
     except Exception as exc:
         store.fail_run(state.collection_source_id, run_id, type(exc).__name__)
         LOGGER.error(
@@ -149,6 +138,27 @@ def _collect_drive_appdata_source(
             type(exc).__name__,
         )
         raise
+
+    # Drive deletion is an acknowledgement, not part of staging durability. If it
+    # fails, leave the already-successful run intact; the next poll safely dedupes
+    # the same event hashes and retries acknowledgement.
+    try:
+        drive_client.acknowledge(batch.processed_file_ids)
+    except Exception as exc:
+        LOGGER.warning(
+            "collector_source_ack_failed source=%s error_type=%s",
+            source.source_key,
+            type(exc).__name__,
+        )
+
+    LOGGER.info(
+        "collector_source_complete source=%s files=%d seen=%d imported=%d ignored=%d",
+        source.source_key,
+        batch.files_seen,
+        len(batch.observations),
+        imported,
+        ignored,
+    )
 
 
 def run_cycle() -> None:
