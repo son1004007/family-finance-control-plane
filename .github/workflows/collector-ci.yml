@@ -31,6 +31,7 @@ jobs:
             scripts/authorize_drive_appdata_collector.py \
             collector/family_finance_collector/config.py \
             collector/family_finance_collector/rules.py \
+            collector/family_finance_collector/device_relay.py \
             collector/family_finance_collector/db.py \
             collector/family_finance_collector/gmail.py \
             collector/family_finance_collector/drive_appdata.py \
