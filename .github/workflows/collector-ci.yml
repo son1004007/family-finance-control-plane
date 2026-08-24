@@ -28,20 +28,27 @@ jobs:
           sh -n scripts/provision_collector_login.sh
           python3 -m py_compile \
             scripts/authorize_gmail_collector.py \
+            scripts/authorize_drive_appdata_collector.py \
             collector/family_finance_collector/config.py \
             collector/family_finance_collector/rules.py \
             collector/family_finance_collector/db.py \
             collector/family_finance_collector/gmail.py \
+            collector/family_finance_collector/drive_appdata.py \
             collector/family_finance_collector/main.py
           python3 tests/test_collector_rules.py
+          python3 tests/test_drive_appdata_relay.py
+          python3 -m json.tool config/collector.example.json >/dev/null
           grep -q '^google-api-python-client==2.198.0$' collector/requirements.txt
           grep -q '^google-auth-oauthlib==1.4.0$' collector/requirements-auth.txt
           if grep -R --line-number -E 'gmail\.modify|gmail\.send|gmail\.compose' scripts/authorize_gmail_collector.py collector/; then
-            echo '::error::collector must stay gmail.readonly'
+            echo '::error::Gmail collector must stay gmail.readonly'
             exit 1
           fi
           grep -q 'gmail.readonly' scripts/authorize_gmail_collector.py
           grep -q 'gmail.readonly' collector/family_finance_collector/gmail.py
+          grep -q 'drive.appdata' scripts/authorize_drive_appdata_collector.py
+          grep -q 'drive.appdata' collector/family_finance_collector/drive_appdata.py
+          ! grep -R --line-number 'https://www.googleapis.com/auth/drive"' scripts/authorize_drive_appdata_collector.py collector/family_finance_collector/drive_appdata.py
 
       - name: Validate Compose network boundary
         shell: bash
@@ -66,6 +73,7 @@ jobs:
           assert set(db.get('networks', {})) == {'finance_internal'}
           assert cfg['networks']['finance_internal'].get('internal') is True
           assert cfg['networks']['collector_egress'].get('internal') is not True
+          assert collector['environment']['DRIVE_APPDATA_TOKEN_FILE'] == '/run/secrets/drive-appdata-token.json'
           print('COLLECTOR_COMPOSE_BOUNDARY=PASS')
           PY
 
@@ -103,10 +111,10 @@ jobs:
           }
           household_id="$(sql -c "SELECT household_id FROM finance.households WHERE label='synthetic_household';")"
           test -n "$household_id"
-          sql -c "INSERT INTO ingest.collection_sources(household_id,source_key,source_type,display_label,authority_level,cadence_seconds,freshness_sla_seconds) VALUES ($household_id,'ci_mail','gmail','CI mailbox','reconciling',900,3600);"
-          source_id="$(sql -c "SELECT collection_source_id FROM ingest.collection_sources WHERE household_id=$household_id AND source_key='ci_mail';")"
+          sql -c "INSERT INTO ingest.collection_sources(household_id,source_key,source_type,display_label,authority_level,cadence_seconds,freshness_sla_seconds) VALUES ($household_id,'ci_device','drive_appdata','CI Android relay','supplemental',300,1800);"
+          source_id="$(sql -c "SELECT collection_source_id FROM ingest.collection_sources WHERE household_id=$household_id AND source_key='ci_device';")"
           sql -c "INSERT INTO ingest.collection_runs(collection_source_id,status,completed_at) VALUES ($source_id,'completed',now());"
-          sql -c "INSERT INTO ingest.collection_observations(collection_source_id,observation_type,authority_level,external_event_hash,subject_key,currency) VALUES ($source_id,'test_notice','supplemental',repeat('a',64),'fixture','KRW');"
+          sql -c "INSERT INTO ingest.collection_observations(collection_source_id,observation_type,authority_level,external_event_hash,subject_key,amount,currency,normalized_payload) VALUES ($source_id,'account_debit','supplemental',repeat('a',64),'example.bank.app',12500,'KRW','{\"source_kind\":\"android_notification\",\"direction\":\"debit\"}'::jsonb);"
           test "$(sql -c "SELECT COUNT(*) FROM ingest.collection_observations WHERE collection_source_id=$source_id;")" = 1
           if sql -c "INSERT INTO finance.transactions(account_id,occurred_at,amount) VALUES (1,now(),1);"; then
             echo '::error::collector unexpectedly mutated finance.transactions'
@@ -118,9 +126,9 @@ jobs:
         run: |
           set -euo pipefail
           docker compose exec -T db psql -v ON_ERROR_STOP=1 -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
-            -c "UPDATE ingest.collection_sources SET last_success_at=now() WHERE source_key='ci_mail';"
+            -c "UPDATE ingest.collection_sources SET last_success_at=now() WHERE source_key='ci_device';"
           status="$(docker compose exec -T db psql -qAt -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
-            -c "SELECT freshness_status FROM analytics.v_collection_source_freshness WHERE source_key='ci_mail';")"
+            -c "SELECT freshness_status FROM analytics.v_collection_source_freshness WHERE source_key='ci_device';")"
           test "$status" = fresh
           echo 'COLLECTION_FRESHNESS=PASS'
 
