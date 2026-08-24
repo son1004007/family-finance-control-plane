@@ -25,6 +25,19 @@ def _required_path(name: str) -> Path:
     return path
 
 
+def _optional_nonempty_path(name: str) -> Path | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    path = Path(raw)
+    try:
+        if not path.is_file() or path.stat().st_size == 0:
+            return None
+    except OSError:
+        return None
+    return path
+
+
 def _insert_observations(
     store: CollectionStore,
     source_id: int,
@@ -170,7 +183,9 @@ def run_cycle() -> None:
     if any(source.source_type == "gmail" for source in config.sources):
         gmail_client = GmailClient(_required_path("GMAIL_TOKEN_FILE"))
     if any(source.source_type == "drive_appdata" for source in config.sources):
-        drive_client = DriveAppDataClient(_required_path("DRIVE_APPDATA_TOKEN_FILE"))
+        drive_token = _optional_nonempty_path("DRIVE_APPDATA_TOKEN_FILE")
+        if drive_token is not None:
+            drive_client = DriveAppDataClient(drive_token)
 
     with connect() as conn:
         store = CollectionStore(conn)
@@ -179,8 +194,15 @@ def run_cycle() -> None:
             try:
                 if source.source_type == "gmail" and gmail_client is not None:
                     _collect_gmail_source(store, source, gmail_client)
-                elif source.source_type == "drive_appdata" and drive_client is not None:
-                    _collect_drive_appdata_source(store, source, drive_client)
+                elif source.source_type == "drive_appdata":
+                    if drive_client is None:
+                        store.ensure_source(source)
+                        LOGGER.info(
+                            "collector_source_skipped source=%s reason=auth_pending",
+                            source.source_key,
+                        )
+                    else:
+                        _collect_drive_appdata_source(store, source, drive_client)
                 else:
                     raise RuntimeError(f"collector client unavailable for {source.source_type}")
             except Exception:
