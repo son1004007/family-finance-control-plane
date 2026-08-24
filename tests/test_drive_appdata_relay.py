@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "collector"))
 
-from family_finance_collector.drive_appdata import parse_notification_batch
+from family_finance_collector.device_relay import parse_notification_batch
 
 
 def _payload(event: dict[str, object]) -> bytes:
