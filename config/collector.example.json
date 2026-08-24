@@ -41,6 +41,19 @@
           }
         ]
       }
+    },
+    {
+      "household_label": "synthetic_household",
+      "source_key": "android_finance_notifications",
+      "source_type": "drive_appdata",
+      "display_label": "Synthetic Android notification relay",
+      "authority_level": "supplemental",
+      "cadence_seconds": 300,
+      "freshness_sla_seconds": 1800,
+      "drive_appdata": {
+        "file_prefix": "ff-notification-",
+        "max_files_per_cycle": 100
+      }
     }
   ]
 }
