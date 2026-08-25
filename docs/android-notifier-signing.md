@@ -7,7 +7,8 @@ This project distributes the personal `Family Finance Notifier` APK by sideloadi
 - The Android signing private key must never be committed to this public repository.
 - Release signing material is injected only through GitHub Actions repository secrets.
 - Pull-request CI never receives the production signing key. It generates an ephemeral CI-only key to exercise the same Gradle release-signing path.
-- The release workflow is `workflow_dispatch` only and uploads the signed APK as a bounded GitHub Actions artifact.
+- The signed release workflow is `workflow_dispatch` only.
+- The local setup script sends secret values to `gh secret set` over standard input rather than putting secret values on the command line.
 - Keep the local keystore backup and its password in separate protected locations. Losing the signing key prevents future APK updates from being installed over the existing app.
 
 Required Actions secrets:
@@ -25,27 +26,37 @@ Prerequisites:
 - JDK with `keytool` available on `PATH`.
 - PowerShell.
 
-From a fresh clone of this repository, run:
+From an up-to-date `main` checkout, run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_android_signing.ps1
 ```
 
-The script:
+The script performs the complete one-time PC-side flow:
 
 1. refuses to overwrite an existing signing key;
 2. asks for one strong password;
 3. creates a long-lived PKCS12 signing keystore under `%USERPROFILE%\.family-finance\`;
 4. registers the four Actions secrets with GitHub CLI;
-5. verifies that all required secret names exist.
+5. verifies that all required secret names exist;
+6. dispatches `Android Notifier Signed Release` on `main`;
+7. waits for the workflow to complete successfully;
+8. downloads the signed APK and SHA-256 checksum under `%USERPROFILE%\Downloads\family-finance-notifier-<run-id>\`.
 
-After the script reports `ANDROID_SIGNING_SETUP=PASS`, back up the generated keystore and store its password separately. Do not put either in Git, cloud notes, chat history, or source documentation.
+Expected success markers include:
 
-## Build a signed APK
+```text
+ANDROID_SIGNING_SETUP=PASS
+ANDROID_RELEASE_DISPATCH=PASS
+ANDROID_RELEASE_WORKFLOW=PASS
+ANDROID_RELEASE_DOWNLOAD=PASS
+```
 
-Run the GitHub Actions workflow `Android Notifier Signed Release` from `main` after the signing secrets exist.
+After the script finishes, back up the generated keystore and store its password separately. Do not put either in Git, cloud notes, chat history, or source documentation.
 
-The workflow:
+## Signed release workflow
+
+The `Android Notifier Signed Release` workflow:
 
 1. restores the keystore only into the ephemeral runner;
 2. generates a monotonically increasing sideload `versionCode` from the workflow run number;
@@ -66,7 +77,7 @@ Only install a release APK produced by the signed-release workflow.
 
 On the Galaxy device:
 
-1. install the APK;
+1. install the downloaded APK;
 2. open `Family Finance Notifier`;
 3. tap `1. 알림 접근 허용` and enable the notifier;
 4. tap `2. 비공개 릴레이 승인` and approve the Google `drive.appdata` authorization;
