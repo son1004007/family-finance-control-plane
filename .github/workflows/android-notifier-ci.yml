@@ -12,7 +12,7 @@ permissions:
 jobs:
   android-build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -55,4 +55,31 @@ jobs:
           java -version
           gradle -p android-notifier --no-daemon :app:assembleDebug
           test -s android-notifier/app/build/outputs/apk/debug/app-debug.apk
-          echo 'ANDROID_NOTIFIER_BUILD=PASS'
+          echo 'ANDROID_NOTIFIER_DEBUG_BUILD=PASS'
+
+      - name: Exercise release signing with ephemeral CI key
+        shell: bash
+        env:
+          ANDROID_SIGNING_STORE_PASSWORD: ci-only-password
+          ANDROID_SIGNING_KEY_ALIAS: ci-only
+          ANDROID_SIGNING_KEY_PASSWORD: ci-only-password
+          ANDROID_VERSION_CODE: '999'
+          ANDROID_VERSION_NAME: 0.0.0-ci
+        run: |
+          set -euo pipefail
+          export ANDROID_SIGNING_STORE_FILE="$RUNNER_TEMP/android-ci-release.jks"
+          keytool -genkeypair \
+            -keystore "$ANDROID_SIGNING_STORE_FILE" \
+            -storetype PKCS12 \
+            -alias "$ANDROID_SIGNING_KEY_ALIAS" \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 3650 \
+            -storepass "$ANDROID_SIGNING_STORE_PASSWORD" \
+            -keypass "$ANDROID_SIGNING_KEY_PASSWORD" \
+            -dname 'CN=CI,O=Family Finance,C=KR' >/dev/null 2>&1
+          gradle -p android-notifier --no-daemon :app:assembleRelease
+          apk='android-notifier/app/build/outputs/apk/release/app-release.apk'
+          test -s "$apk"
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$apk" >/dev/null
+          echo 'ANDROID_NOTIFIER_RELEASE_SIGNING=PASS'
