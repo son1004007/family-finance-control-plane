@@ -44,6 +44,8 @@ AI clients
 - continuous-source registry, collection runs, provider cursors and freshness SLA tracking
 - authority-aware staged observations (`authoritative`, `reconciling`, `supplemental`)
 - Gmail readonly collector with bounded initial sync and incremental `historyId` collection
+- privacy-safe Galaxy notification relay with package-aware normalization and Google Drive `appDataFolder` transport
+- stable Android release-signing path with production keys isolated in GitHub Actions secrets
 - dedicated collector DB principal that cannot mutate the canonical finance ledger
 - outbound-only collector network while PostgreSQL remains internal-only
 - monthly cash flow and category spending
@@ -106,6 +108,8 @@ The long-term operating model is not repeated manual snapshots. Connectors perio
 
 The first reusable connector is Gmail. One-time Desktop OAuth grants only `gmail.readonly`; subsequent collection uses the stored refresh token and Gmail history cursor. Raw message bodies/subjects are not persisted by the default collector.
 
+For institutions without a practical personal API, the Android notifier can normalize supported financial-app notifications on-device and relay only the structured event through the Google Drive `appDataFolder` boundary. Stable sideload signing and the one-time Windows bootstrap are documented in `docs/android-notifier-signing.md`.
+
 See `docs/collection/continuous-collection.md` and `config/collector.example.json`.
 
 `compose.collector.yaml` gives only the collector outbound Internet access. PostgreSQL stays on the internal Docker network and neither service publishes a host port.
@@ -120,6 +124,7 @@ See:
 - `docs/security/mcp-threat-model.md`
 - `docs/analytics/metric-definitions.md`
 - `docs/collection/continuous-collection.md`
+- `docs/android-notifier-signing.md`
 - `docs/operations/disaster-recovery.md`
 - `docs/operations/retention-policy.md`
 - `docs/operations/dependency-policy.md`
