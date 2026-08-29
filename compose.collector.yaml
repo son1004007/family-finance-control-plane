@@ -17,9 +17,6 @@ services:
       DRIVE_APPDATA_TOKEN_FILE: /run/secrets/drive-appdata-token.json
       COLLECTOR_TICK_SECONDS: ${COLLECTOR_TICK_SECONDS:-60}
       COLLECTOR_LOG_LEVEL: INFO
-    depends_on:
-      db:
-        condition: service_healthy
     volumes:
       - ${FINANCE_COLLECTOR_CONFIG_SOURCE:?FINANCE_COLLECTOR_CONFIG_SOURCE must be set}:/run/config/collector.json:ro
       - ${FINANCE_GMAIL_TOKEN_SOURCE:?FINANCE_GMAIL_TOKEN_SOURCE must be set}:/run/secrets/gmail-token.json:ro
