@@ -17,6 +17,16 @@ services:
       MCP_ALLOWED_HOSTS: family-finance-mcp:8000,mcp:8000,127.0.0.1:8000,localhost:8000
       MCP_MAX_ROWS: "100"
       MCP_LOG_LEVEL: INFO
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
     networks:
       - finance_internal
     security_opt:
