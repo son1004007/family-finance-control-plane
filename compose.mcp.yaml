@@ -1,5 +1,6 @@
 services:
   mcp:
+    image: family-finance-mcp:runtime
     build:
       context: .
       dockerfile: mcp_server/Dockerfile

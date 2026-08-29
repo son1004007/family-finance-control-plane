@@ -1,5 +1,6 @@
 services:
   collector:
+    image: family-finance-collector:runtime
     build:
       context: .
       dockerfile: collector/Dockerfile
