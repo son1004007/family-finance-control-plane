@@ -150,6 +150,58 @@ jobs:
             docker compose -f compose.yaml -f compose.collector.yaml build collector
           echo 'COLLECTOR_IMAGE_BUILD=PASS'
 
+      - name: Verify staged transfer reconciliation integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          set -a
+          . "$COLLECTOR_SECRET_FILE"
+          set +a
+          export FINANCE_COLLECTOR_CONFIG_SOURCE="$PWD/config/collector.example.json"
+          export FINANCE_GMAIL_TOKEN_SOURCE="$RUNNER_TEMP/gmail-token.json"
+          sql() {
+            docker compose exec -T -e PGPASSWORD="$FINANCE_COLLECTOR_DB_PASSWORD" db \
+              psql -h 127.0.0.1 -qAt -v ON_ERROR_STOP=1 \
+              -U "$FINANCE_COLLECTOR_DB_USER" -d "$POSTGRES_DB" "$@"
+          }
+          source_id="$(sql -c "SELECT collection_source_id FROM ingest.collection_sources WHERE source_key='ci_device';")"
+          test -n "$source_id"
+          sql -c "INSERT INTO ingest.collection_observations(collection_source_id,event_at,observation_type,authority_level,external_event_hash,subject_key,amount,currency,normalized_payload) VALUES ($source_id,now(),'account_debit','supplemental',repeat('b',64),'example_bank',50000,'KRW','{\"source_kind\":\"android_notification\",\"provider_key\":\"example_bank\",\"direction\":\"debit\",\"merchant_key\":\"example_wallet\"}'::jsonb);"
+          sql -c "INSERT INTO ingest.collection_observations(collection_source_id,event_at,observation_type,authority_level,external_event_hash,subject_key,amount,currency,normalized_payload) VALUES ($source_id,now()+interval '30 seconds','wallet_charge','supplemental',repeat('c',64),'example_wallet',50000,'KRW','{\"source_kind\":\"android_notification\",\"provider_key\":\"example_wallet\",\"direction\":\"credit\",\"merchant_key\":\"example_wallet\"}'::jsonb);"
+          sql -c "INSERT INTO ingest.collection_observations(collection_source_id,event_at,observation_type,authority_level,external_event_hash,subject_key,amount,currency,normalized_payload) VALUES ($source_id,now()+interval '45 seconds','wallet_purchase','supplemental',repeat('d',64),'example_wallet',17500,'KRW','{\"source_kind\":\"android_notification\",\"provider_key\":\"example_wallet\",\"direction\":\"debit\",\"merchant_key\":\"example_merchant\"}'::jsonb);"
+
+          docker compose -f compose.yaml -f compose.collector.yaml run --rm -T collector python - <<'PY'
+          from family_finance_collector.db import CollectionStore, connect
+
+          with connect() as conn:
+              row = conn.execute(
+                  "SELECT collection_source_id FROM ingest.collection_sources WHERE source_key='ci_device'"
+              ).fetchone()
+              assert row is not None
+              matched, ambiguous = CollectionStore(conn).reconcile_internal_transfers(
+                  row["collection_source_id"]
+              )
+              assert matched == 1
+              assert ambiguous == 0
+          print("TRANSFER_RECONCILIATION_DB=PASS")
+          PY
+
+          bank_status="$(sql -c "SELECT normalized_payload#>>'{transfer_reconciliation,status}' FROM ingest.collection_observations WHERE external_event_hash=repeat('b',64);")"
+          wallet_status="$(sql -c "SELECT normalized_payload#>>'{transfer_reconciliation,status}' FROM ingest.collection_observations WHERE external_event_hash=repeat('c',64);")"
+          bank_role="$(sql -c "SELECT normalized_payload#>>'{transfer_reconciliation,role}' FROM ingest.collection_observations WHERE external_event_hash=repeat('b',64);")"
+          wallet_role="$(sql -c "SELECT normalized_payload#>>'{transfer_reconciliation,role}' FROM ingest.collection_observations WHERE external_event_hash=repeat('c',64);")"
+          bank_group="$(sql -c "SELECT normalized_payload#>>'{transfer_reconciliation,group_id}' FROM ingest.collection_observations WHERE external_event_hash=repeat('b',64);")"
+          wallet_group="$(sql -c "SELECT normalized_payload#>>'{transfer_reconciliation,group_id}' FROM ingest.collection_observations WHERE external_event_hash=repeat('c',64);")"
+          purchase_status="$(sql -c "SELECT COALESCE(normalized_payload#>>'{transfer_reconciliation,status}','') FROM ingest.collection_observations WHERE external_event_hash=repeat('d',64);")"
+          test "$bank_status" = matched
+          test "$wallet_status" = matched
+          test "$bank_role" = bank_debit
+          test "$wallet_role" = wallet_charge
+          test -n "$bank_group"
+          test "$bank_group" = "$wallet_group"
+          test -z "$purchase_status"
+          echo 'TRANSFER_RECONCILIATION_STAGING=PASS'
+
       - name: Cleanup
         if: always()
         shell: bash
