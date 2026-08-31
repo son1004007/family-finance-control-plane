@@ -42,6 +42,7 @@ def test_parses_normalized_debit_without_raw_text() -> None:
         _payload(
             _bank_event(
                 merchant_key="example_wallet",
+                funding_target="example_wallet",
                 account_alias="daily_spending",
                 balance_after="987654",
             )
@@ -57,6 +58,7 @@ def test_parses_normalized_debit_without_raw_text() -> None:
     assert item.normalized_payload["direction"] == "debit"
     assert item.normalized_payload["provider_key"] == "kakaobank"
     assert item.normalized_payload["merchant_key"] == "example_wallet"
+    assert item.normalized_payload["funding_target"] == "example_wallet"
     assert item.normalized_payload["balance_after"] == "987654"
     assert "raw_text" not in item.normalized_payload
     assert "device_id" not in item.normalized_payload
@@ -124,10 +126,48 @@ def test_rejects_provider_spoof_for_known_package() -> None:
         raise AssertionError("provider/package mismatch must fail closed")
 
 
+def test_rejects_funding_target_without_matching_wallet_merchant() -> None:
+    try:
+        parse_notification_batch(
+            _payload(
+                _bank_event(
+                    event_id="event-006",
+                    merchant_key="example_merchant",
+                    funding_target="example_wallet",
+                )
+            )
+        )
+    except ValueError as exc:
+        assert "distinct normalized wallet merchant" in str(exc)
+    else:
+        raise AssertionError("funding target must match the normalized wallet merchant")
+
+
+def test_rejects_funding_target_on_non_debit_event() -> None:
+    try:
+        parse_notification_batch(
+            _payload(
+                _bank_event(
+                    event_id="event-007",
+                    event_type="account_credit",
+                    direction="credit",
+                    merchant_key="example_wallet",
+                    funding_target="example_wallet",
+                )
+            )
+        )
+    except ValueError as exc:
+        assert "debit-side account funding" in str(exc)
+    else:
+        raise AssertionError("funding target must be debit-side only")
+
+
 if __name__ == "__main__":
     test_parses_normalized_debit_without_raw_text()
     test_rejects_raw_notification_content()
     test_rejects_negative_amount_and_uses_direction_separately()
     test_rejects_unapproved_provider_package_pair()
     test_rejects_provider_spoof_for_known_package()
+    test_rejects_funding_target_without_matching_wallet_merchant()
+    test_rejects_funding_target_on_non_debit_event()
     print("DRIVE_APPDATA_RELAY_TESTS=PASS")
