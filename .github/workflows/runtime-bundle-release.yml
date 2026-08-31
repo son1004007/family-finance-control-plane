@@ -1,0 +1,113 @@
+name: Runtime Bundle Release
+
+on:
+  pull_request:
+    paths:
+      - 'mcp_server/**'
+      - 'collector/**'
+      - 'compose*.yaml'
+      - '.github/workflows/runtime-bundle-release.yml'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-build-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build linux/amd64 runtime images
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          docker build --platform linux/amd64 -t family-finance-mcp:runtime -f mcp_server/Dockerfile .
+          docker build --platform linux/amd64 -t family-finance-collector:runtime -f collector/Dockerfile .
+          test "$(docker image inspect -f '{{.Architecture}}' family-finance-mcp:runtime)" = amd64
+          test "$(docker image inspect -f '{{.Architecture}}' family-finance-collector:runtime)" = amd64
+          echo 'PUBLIC_RUNTIME_BUNDLE_BUILD=PASS'
+
+  publish-runtime-bundle:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build immutable linux/amd64 runtime bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = x86_64
+          PUBLIC_SHA="$(git rev-parse HEAD)"
+          printf '%s' "$PUBLIC_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          TAG="runtime-$PUBLIC_SHA"
+          ASSET="family-finance-runtime-images-$PUBLIC_SHA.tar.gz"
+          CHECKSUM="$ASSET.sha256"
+
+          docker build --platform linux/amd64 -t family-finance-mcp:runtime -f mcp_server/Dockerfile .
+          docker build --platform linux/amd64 -t family-finance-collector:runtime -f collector/Dockerfile .
+          test "$(docker image inspect -f '{{.Architecture}}' family-finance-mcp:runtime)" = amd64
+          test "$(docker image inspect -f '{{.Architecture}}' family-finance-collector:runtime)" = amd64
+
+          cd "$RUNNER_TEMP"
+          docker save family-finance-mcp:runtime family-finance-collector:runtime | gzip -1 > "$ASSET"
+          gzip -t "$ASSET"
+          sha256sum "$ASSET" > "$CHECKSUM"
+          test -s "$ASSET"
+          test -s "$CHECKSUM"
+
+          {
+            echo "public_sha=$PUBLIC_SHA"
+            echo "tag=$TAG"
+            echo "asset=$ASSET"
+            echo "checksum=$CHECKSUM"
+          } >> "$GITHUB_OUTPUT"
+          echo "PUBLIC_RUNTIME_BUNDLE_BUILD=PASS source=$PUBLIC_SHA"
+
+      - name: Publish or verify immutable release
+        shell: bash
+        env:
+          PUBLIC_SHA: ${{ steps.bundle.outputs.public_sha }}
+          TAG: ${{ steps.bundle.outputs.tag }}
+          ASSET: ${{ steps.bundle.outputs.asset }}
+          CHECKSUM: ${{ steps.bundle.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            existing="$RUNNER_TEMP/existing"
+            mkdir -p "$existing"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$CHECKSUM" --dir "$existing"
+            cmp -s "$CHECKSUM" "$existing/$CHECKSUM" || {
+              echo '::error::existing immutable runtime release checksum differs from this build'
+              exit 40
+            }
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir "$existing"
+            (cd "$existing" && sha256sum -c "$CHECKSUM")
+            echo "PUBLIC_RUNTIME_BUNDLE_RELEASE=EXISTS_MATCH source=$PUBLIC_SHA"
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$PUBLIC_SHA" \
+            --title "Family Finance Runtime ${PUBLIC_SHA:0:12}" \
+            --notes "Immutable prebuilt linux/amd64 MCP and collector images for public source $PUBLIC_SHA. Contains public implementation only; no household data or credentials." \
+            "$ASSET" "$CHECKSUM"
+          echo "PUBLIC_RUNTIME_BUNDLE_RELEASE=PASS source=$PUBLIC_SHA"
