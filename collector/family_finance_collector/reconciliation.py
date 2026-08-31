@@ -58,15 +58,17 @@ def _is_candidate_pair(
     if _payload_string(bank, "direction") != "debit":
         return False
 
-    bank_wallet_key = _payload_string(bank, "merchant_key")
+    funding_target = _payload_string(bank, "funding_target")
+    bank_merchant = _payload_string(bank, "merchant_key")
     wallet_provider = _provider_key(wallet)
-    wallet_merchant = _payload_string(wallet, "merchant_key")
     bank_provider = _provider_key(bank)
-    if bank_wallet_key is None or wallet_provider is None or bank_provider is None:
+    if funding_target is None or bank_merchant is None:
+        return False
+    if wallet_provider is None or bank_provider is None:
         return False
     if bank_provider == wallet_provider:
         return False
-    if bank_wallet_key not in {wallet_provider, wallet_merchant}:
+    if bank_merchant != funding_target or funding_target != wallet_provider:
         return False
 
     return abs(bank.event_at_ms - wallet.event_at_ms) <= max_delta_ms
@@ -86,9 +88,10 @@ def reconcile_internal_transfers(
     """Find only unambiguous bank-debit -> wallet-charge transfer pairs.
 
     Matching is intentionally conservative. A pair must have the same positive amount and
-    currency, the bank-side merchant key must identify the wallet provider, the events must
-    fall within the bounded time window, and the candidate relation must be one-to-one from
-    both sides. Wallet purchases are deliberately excluded so merchant spend remains spend.
+    currency, the bank event must carry an explicit normalized `funding_target` equal to the
+    wallet provider, the events must fall within the bounded time window, and the candidate
+    relation must be one-to-one from both sides. Wallet purchases are deliberately excluded
+    so merchant spend remains spend.
     """
     if max_delta_ms <= 0 or max_delta_ms > 60 * 60 * 1000:
         raise ValueError("max_delta_ms must be between 1 ms and 1 hour")
