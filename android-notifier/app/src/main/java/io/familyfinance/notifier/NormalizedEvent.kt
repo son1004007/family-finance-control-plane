@@ -12,6 +12,7 @@ data class NormalizedEvent(
     val sourceApp: String,
     val providerKey: String,
     val merchantKey: String? = null,
+    val fundingTarget: String? = null,
     val accountAlias: String? = null,
     val balanceAfter: String? = null,
     val confidence: Double? = null,
@@ -26,6 +27,7 @@ data class NormalizedEvent(
         put("source_app", sourceApp)
         put("provider_key", providerKey)
         merchantKey?.let { put("merchant_key", it) }
+        fundingTarget?.let { put("funding_target", it) }
         accountAlias?.let { put("account_alias", it) }
         balanceAfter?.let { put("balance_after", it) }
         confidence?.let { put("confidence", it) }
