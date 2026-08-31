@@ -20,6 +20,7 @@ def _event(
     currency: str = "KRW",
     direction: str,
     merchant_key: str | None = None,
+    funding_target: str | None = None,
 ) -> Observation:
     payload: dict[str, object] = {
         "source_kind": "android_notification",
@@ -28,6 +29,8 @@ def _event(
     }
     if merchant_key is not None:
         payload["merchant_key"] = merchant_key
+    if funding_target is not None:
+        payload["funding_target"] = funding_target
     return Observation(
         external_event_hash=event_hash,
         event_at_ms=event_at_ms,
@@ -49,6 +52,7 @@ def _bank(event_hash: str, *, event_at_ms: int = 1_000_000, amount: str = "50000
         amount=amount,
         direction="debit",
         merchant_key="example_wallet",
+        funding_target="example_wallet",
     )
 
 
@@ -109,6 +113,22 @@ def test_wallet_purchase_is_never_matched_as_internal_transfer() -> None:
         merchant_key="example_merchant",
     )
     result = reconcile_internal_transfers([_bank("f" * 64), purchase])
+    assert not result.matches
+    assert not result.candidate_event_hashes
+
+
+def test_merchant_identity_without_funding_hint_does_not_match() -> None:
+    ordinary_bank_debit = _event(
+        "f" * 64,
+        event_at_ms=1_000_000,
+        observation_type="account_debit",
+        provider_key="example_bank",
+        direction="debit",
+        merchant_key="example_wallet",
+    )
+    result = reconcile_internal_transfers(
+        [ordinary_bank_debit, _wallet_charge("e" * 64)]
+    )
     assert not result.matches
     assert not result.candidate_event_hashes
 
@@ -174,6 +194,7 @@ if __name__ == "__main__":
     test_matches_unique_bank_debit_to_wallet_charge()
     test_accepts_legacy_wallet_charge_direction_for_upgrade_compatibility()
     test_wallet_purchase_is_never_matched_as_internal_transfer()
+    test_merchant_identity_without_funding_hint_does_not_match()
     test_requires_exact_amount_currency_provider_and_time_window()
     test_ambiguous_same_amount_events_fail_closed()
     test_group_id_and_result_are_deterministic_across_input_order()
