@@ -10,6 +10,7 @@ object NotificationNormalizer {
         "com.wooribank.smart.npib" to "wooribank",
         "com.coupang.mobile" to "coupang",
     )
+    private val walletProviders = setOf("coupang")
 
     private val amountRegex = Regex("""([0-9]{1,3}(?:,[0-9]{3})+|[0-9]+)\s*원""")
     private val actionAmountRegexes = listOf(
@@ -41,21 +42,36 @@ object NotificationNormalizer {
         val amount = findTransactionAmount(combined, balanceMatch?.range) ?: return null
 
         val merchantKey = merchantKey(combined)
-        val direction = when {
-            creditKeywords.any { combined.contains(it) } -> "credit"
-            debitKeywords.any { combined.contains(it) } -> "debit"
-            else -> "unknown"
-        }
-        val isCoupay = combined.contains("쿠페이", ignoreCase = true)
+        val isWalletProvider = providerKey in walletProviders
         val eventType = when {
-            isCoupay && combined.contains("충전") -> "wallet_charge"
-            isCoupay && combined.contains("환불") -> "wallet_refund"
+            isWalletProvider && combined.contains("충전") -> "wallet_charge"
+            isWalletProvider && combined.contains("환불") -> "wallet_refund"
+            !isWalletProvider && merchantKey != null && combined.contains("충전") -> "account_debit"
             combined.contains("취소") || combined.contains("환불") -> "card_refund"
             combined.contains("출금") || combined.contains("이체") -> "account_debit"
             combined.contains("입금") -> "account_credit"
-            isCoupay && (combined.contains("결제") || combined.contains("승인") || combined.contains("사용")) -> "wallet_purchase"
+            isWalletProvider && (combined.contains("결제") || combined.contains("승인") || combined.contains("사용")) -> "wallet_purchase"
             combined.contains("결제") || combined.contains("승인") || combined.contains("사용") -> "card_purchase"
             else -> "financial_notification"
+        }
+        val fundingTarget = if (
+            eventType == "account_debit" &&
+            !isWalletProvider &&
+            merchantKey != null &&
+            combined.contains("충전")
+        ) {
+            merchantKey
+        } else {
+            null
+        }
+        val direction = when (eventType) {
+            "account_credit", "card_refund", "wallet_charge", "wallet_refund" -> "credit"
+            "account_debit", "card_purchase", "wallet_purchase" -> "debit"
+            else -> when {
+                creditKeywords.any { combined.contains(it) } -> "credit"
+                debitKeywords.any { combined.contains(it) } -> "debit"
+                else -> "unknown"
+            }
         }
         val confidence = when (eventType) {
             "financial_notification" -> 0.55
@@ -74,6 +90,7 @@ object NotificationNormalizer {
             sourceApp = sourceApp,
             providerKey = providerKey,
             merchantKey = merchantKey,
+            fundingTarget = fundingTarget,
             balanceAfter = balanceAfter,
             confidence = confidence,
         )

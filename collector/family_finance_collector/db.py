@@ -10,6 +10,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from .config import SourceConfig
+from .reconciliation import RULE_ID, reconcile_internal_transfers
 from .rules import Observation
 
 
@@ -142,6 +143,110 @@ class CollectionStore:
                 ),
             ).fetchone()
             return row is not None
+
+    def reconcile_internal_transfers(self, source_id: int, *, limit: int = 500) -> tuple[int, int]:
+        """Annotate only one-to-one bank-debit/wallet-charge matches in staging JSON.
+
+        This never writes canonical finance tables. Ambiguous candidate groups are tagged as
+        ambiguous so future promotion logic can fail closed instead of double-counting spend.
+        """
+        if limit < 2 or limit > 2000:
+            raise ValueError("reconciliation limit must be between 2 and 2000")
+
+        with self.conn.transaction():
+            rows = self.conn.execute(
+                """
+                SELECT
+                    collection_observation_id,
+                    external_event_hash,
+                    (EXTRACT(EPOCH FROM event_at) * 1000)::BIGINT AS event_at_ms,
+                    observation_type,
+                    authority_level,
+                    subject_key,
+                    amount,
+                    currency,
+                    normalized_payload
+                FROM ingest.collection_observations
+                WHERE collection_source_id = %s
+                  AND event_at IS NOT NULL
+                  AND observation_type IN ('account_debit', 'wallet_charge')
+                ORDER BY event_at DESC, collection_observation_id DESC
+                LIMIT %s
+                """,
+                (source_id, limit),
+            ).fetchall()
+
+            observations: list[Observation] = []
+            ids_by_hash: dict[str, int] = {}
+            for row in rows:
+                event_hash = str(row["external_event_hash"]).strip()
+                payload = row["normalized_payload"]
+                if not isinstance(payload, dict):
+                    payload = {}
+                observations.append(
+                    Observation(
+                        external_event_hash=event_hash,
+                        event_at_ms=int(row["event_at_ms"]),
+                        observation_type=str(row["observation_type"]),
+                        authority_level=str(row["authority_level"]),
+                        subject_key=str(row["subject_key"] or ""),
+                        amount=row["amount"],
+                        currency=row["currency"],
+                        normalized_payload=payload,
+                    )
+                )
+                ids_by_hash[event_hash] = int(row["collection_observation_id"])
+
+            result = reconcile_internal_transfers(observations)
+            for match in result.matches:
+                common = {
+                    "status": "matched",
+                    "kind": "internal_transfer",
+                    "rule": RULE_ID,
+                    "group_id": match.group_id,
+                    "wallet_provider": match.wallet_provider,
+                    "time_delta_seconds": match.delta_ms // 1000,
+                }
+                for event_hash, counterpart_hash, role in (
+                    (match.bank_event_hash, match.wallet_event_hash, "bank_debit"),
+                    (match.wallet_event_hash, match.bank_event_hash, "wallet_charge"),
+                ):
+                    observation_id = ids_by_hash[event_hash]
+                    metadata = dict(common)
+                    metadata["role"] = role
+                    metadata["counterpart_event_hash"] = counterpart_hash
+                    self.conn.execute(
+                        """
+                        UPDATE ingest.collection_observations
+                        SET normalized_payload = normalized_payload || %s
+                        WHERE collection_observation_id = %s
+                        """,
+                        (Jsonb({"transfer_reconciliation": metadata}), observation_id),
+                    )
+
+            for event_hash in sorted(result.ambiguous_event_hashes):
+                observation_id = ids_by_hash[event_hash]
+                self.conn.execute(
+                    """
+                    UPDATE ingest.collection_observations
+                    SET normalized_payload = normalized_payload || %s
+                    WHERE collection_observation_id = %s
+                    """,
+                    (
+                        Jsonb(
+                            {
+                                "transfer_reconciliation": {
+                                    "status": "ambiguous",
+                                    "kind": "internal_transfer_candidate",
+                                    "rule": RULE_ID,
+                                }
+                            }
+                        ),
+                        observation_id,
+                    ),
+                )
+
+        return len(result.matches), len(result.ambiguous_event_hashes)
 
     def complete_run(
         self,

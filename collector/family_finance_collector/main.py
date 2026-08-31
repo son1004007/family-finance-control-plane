@@ -152,6 +152,26 @@ def _collect_drive_appdata_source(
         )
         raise
 
+    # Reconciliation is derived staging metadata. Collection durability must not be
+    # rolled back if this optional post-processing fails; a later cycle can retry it.
+    try:
+        transfer_matches, transfer_ambiguous = store.reconcile_internal_transfers(
+            state.collection_source_id
+        )
+    except Exception as exc:
+        LOGGER.warning(
+            "collector_transfer_reconciliation_failed source=%s error_type=%s",
+            source.source_key,
+            type(exc).__name__,
+        )
+    else:
+        LOGGER.info(
+            "collector_transfer_reconciliation_complete source=%s matched=%d ambiguous=%d",
+            source.source_key,
+            transfer_matches,
+            transfer_ambiguous,
+        )
+
     # Drive deletion is an acknowledgement, not part of staging durability. If it
     # fails, leave the already-successful run intact; the next poll safely dedupes
     # the same event hashes and retries acknowledgement.

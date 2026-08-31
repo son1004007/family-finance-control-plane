@@ -107,8 +107,14 @@ def _parse_event(raw: Any, *, batch_id: str, device_id: str) -> Observation:
         raise ValueError("currency must be a three-letter code")
 
     merchant_key = _optional_short_string(raw, "merchant_key")
+    funding_target = _optional_short_string(raw, "funding_target")
     account_alias = _optional_short_string(raw, "account_alias")
     balance_after = _parse_amount(raw.get("balance_after"))
+    if funding_target is not None:
+        if event_type != "account_debit" or direction != "debit":
+            raise ValueError("funding_target is allowed only for debit-side account funding events")
+        if merchant_key != funding_target or provider_key == funding_target:
+            raise ValueError("funding_target must identify a distinct normalized wallet merchant")
 
     confidence = raw.get("confidence")
     if confidence is not None:
@@ -132,6 +138,8 @@ def _parse_event(raw: Any, *, batch_id: str, device_id: str) -> Observation:
     }
     if merchant_key is not None:
         payload["merchant_key"] = merchant_key
+    if funding_target is not None:
+        payload["funding_target"] = funding_target
     if account_alias is not None:
         payload["account_alias"] = account_alias
     if balance_after is not None:
