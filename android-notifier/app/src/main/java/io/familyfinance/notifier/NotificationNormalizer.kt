@@ -54,6 +54,16 @@ object NotificationNormalizer {
             combined.contains("결제") || combined.contains("승인") || combined.contains("사용") -> "card_purchase"
             else -> "financial_notification"
         }
+        val fundingTarget = if (
+            eventType == "account_debit" &&
+            !isWalletProvider &&
+            merchantKey != null &&
+            combined.contains("충전")
+        ) {
+            merchantKey
+        } else {
+            null
+        }
         val direction = when (eventType) {
             "account_credit", "card_refund", "wallet_charge", "wallet_refund" -> "credit"
             "account_debit", "card_purchase", "wallet_purchase" -> "debit"
@@ -80,6 +90,7 @@ object NotificationNormalizer {
             sourceApp = sourceApp,
             providerKey = providerKey,
             merchantKey = merchantKey,
+            fundingTarget = fundingTarget,
             balanceAfter = balanceAfter,
             confidence = confidence,
         )
