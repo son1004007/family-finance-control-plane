@@ -2,6 +2,7 @@ package io.familyfinance.notifier
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class NotificationNormalizerTest {
@@ -21,6 +22,7 @@ class NotificationNormalizerTest {
         assertEquals("345678", event.balanceAfter)
         assertEquals("debit", event.direction)
         assertEquals("kakaobank", event.providerKey)
+        assertNull(event.fundingTarget)
     }
 
     @Test
@@ -37,6 +39,7 @@ class NotificationNormalizerTest {
         assertEquals("25000", event!!.amount)
         assertEquals("900000", event.balanceAfter)
         assertEquals("account_debit", event.eventType)
+        assertNull(event.fundingTarget)
     }
 
     @Test
@@ -56,6 +59,7 @@ class NotificationNormalizerTest {
         assertEquals("debit", event.direction)
         assertEquals("kakaobank", event.providerKey)
         assertEquals("coupang", event.merchantKey)
+        assertEquals("coupang", event.fundingTarget)
     }
 
     @Test
@@ -75,6 +79,7 @@ class NotificationNormalizerTest {
         assertEquals("credit", event.direction)
         assertEquals("coupang", event.providerKey)
         assertEquals("coupang", event.merchantKey)
+        assertNull(event.fundingTarget)
     }
 
     @Test
@@ -92,6 +97,7 @@ class NotificationNormalizerTest {
         assertEquals("17500", event.amount)
         assertEquals("56500", event.balanceAfter)
         assertEquals("debit", event.direction)
+        assertNull(event.fundingTarget)
     }
 
     @Test
@@ -109,5 +115,6 @@ class NotificationNormalizerTest {
         assertEquals("8900", event.amount)
         assertEquals("82900", event.balanceAfter)
         assertEquals("credit", event.direction)
+        assertNull(event.fundingTarget)
     }
 }
