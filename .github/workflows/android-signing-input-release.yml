@@ -1,0 +1,156 @@
+name: Android Signing Input Release
+
+on:
+  pull_request:
+    paths:
+      - 'android-notifier/**'
+      - '.github/workflows/android-signing-input-release.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'android-notifier/**'
+      - '.github/workflows/android-signing-input-release.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pr-build-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build immutable-signing input candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ANDROID_HOME:-}"
+          set +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          set -o pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+
+          cd "$RUNNER_TEMP"
+          curl -fsSLo gradle.zip https://services.gradle.org/distributions/gradle-8.10.2-bin.zip
+          curl -fsSLo gradle.zip.sha256 https://services.gradle.org/distributions/gradle-8.10.2-bin.zip.sha256
+          printf '%s  %s\n' "$(cat gradle.zip.sha256)" gradle.zip | sha256sum -c -
+          unzip -q gradle.zip
+          "$RUNNER_TEMP/gradle-8.10.2/bin/gradle" -p "$GITHUB_WORKSPACE/android-notifier" --no-daemon :app:assembleRelease
+
+          APK="$(find "$GITHUB_WORKSPACE/android-notifier/app/build/outputs/apk/release" -maxdepth 1 -type f -name '*release*.apk' | head -1)"
+          test -n "$APK" && test -s "$APK"
+          mkdir -p signing-input/build-tools
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -v -p 4 "$APK" signing-input/app-release-aligned.apk >/dev/null
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 signing-input/app-release-aligned.apk >/dev/null
+          cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" signing-input/build-tools/apksigner
+          cp -R "$ANDROID_HOME/build-tools/35.0.0/lib" signing-input/build-tools/lib
+          chmod 755 signing-input/build-tools/apksigner
+          test -s signing-input/build-tools/lib/apksigner.jar
+          printf 'PUBLIC_SOURCE_SHA=%s\nPACKAGE_NAME=io.familyfinance.notifier\nANDROID_BUILD_TOOLS=35.0.0\nGRADLE_VERSION=8.10.2\n' \
+            "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)" > signing-input/manifest.env
+          tar -czf android-signing-input.tgz -C signing-input .
+          gzip -t android-signing-input.tgz
+          test -s android-signing-input.tgz
+          echo 'ANDROID_SIGNING_INPUT_BUILD=PASS'
+
+  publish-signing-input:
+    if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build exact aligned APK and signing-tool bundle
+        id: bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLIC_SHA="$(git rev-parse HEAD)"
+          printf '%s\n' "$PUBLIC_SHA" | grep -Eq '^[0-9a-f]{40}$'
+          TAG="android-input-$PUBLIC_SHA"
+          ASSET="family-finance-android-signing-input-$PUBLIC_SHA.tar.gz"
+          CHECKSUM="$ASSET.sha256"
+
+          test -n "${ANDROID_HOME:-}"
+          set +o pipefail
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null
+          set -o pipefail
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-35" "build-tools;35.0.0"
+
+          cd "$RUNNER_TEMP"
+          curl -fsSLo gradle.zip https://services.gradle.org/distributions/gradle-8.10.2-bin.zip
+          curl -fsSLo gradle.zip.sha256 https://services.gradle.org/distributions/gradle-8.10.2-bin.zip.sha256
+          printf '%s  %s\n' "$(cat gradle.zip.sha256)" gradle.zip | sha256sum -c -
+          unzip -q gradle.zip
+          "$RUNNER_TEMP/gradle-8.10.2/bin/gradle" -p "$GITHUB_WORKSPACE/android-notifier" --no-daemon :app:assembleRelease
+
+          APK="$(find "$GITHUB_WORKSPACE/android-notifier/app/build/outputs/apk/release" -maxdepth 1 -type f -name '*release*.apk' | head -1)"
+          test -n "$APK" && test -s "$APK"
+          rm -rf signing-input
+          mkdir -p signing-input/build-tools
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -f -v -p 4 "$APK" signing-input/app-release-aligned.apk >/dev/null
+          "$ANDROID_HOME/build-tools/35.0.0/zipalign" -c -v 4 signing-input/app-release-aligned.apk >/dev/null
+          cp "$ANDROID_HOME/build-tools/35.0.0/apksigner" signing-input/build-tools/apksigner
+          cp -R "$ANDROID_HOME/build-tools/35.0.0/lib" signing-input/build-tools/lib
+          chmod 755 signing-input/build-tools/apksigner
+          test -s signing-input/build-tools/lib/apksigner.jar
+          printf 'PUBLIC_SOURCE_SHA=%s\nPACKAGE_NAME=io.familyfinance.notifier\nANDROID_BUILD_TOOLS=35.0.0\nGRADLE_VERSION=8.10.2\n' \
+            "$PUBLIC_SHA" > signing-input/manifest.env
+
+          tar -czf "$ASSET" -C signing-input .
+          gzip -t "$ASSET"
+          sha256sum "$ASSET" > "$CHECKSUM"
+          test -s "$ASSET" && test -s "$CHECKSUM"
+          {
+            echo "public_sha=$PUBLIC_SHA"
+            echo "tag=$TAG"
+            echo "asset=$ASSET"
+            echo "checksum=$CHECKSUM"
+          } >> "$GITHUB_OUTPUT"
+          echo "ANDROID_SIGNING_INPUT_BUILD=PASS source=$PUBLIC_SHA"
+
+      - name: Publish or verify immutable signing input release
+        shell: bash
+        env:
+          PUBLIC_SHA: ${{ steps.bundle.outputs.public_sha }}
+          TAG: ${{ steps.bundle.outputs.tag }}
+          ASSET: ${{ steps.bundle.outputs.asset }}
+          CHECKSUM: ${{ steps.bundle.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            existing="$RUNNER_TEMP/existing-signing-input"
+            rm -rf "$existing"
+            mkdir -p "$existing"
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$CHECKSUM" --dir "$existing"
+            cmp -s "$CHECKSUM" "$existing/$CHECKSUM" || {
+              echo '::error::existing immutable Android signing input checksum differs from this build'
+              exit 40
+            }
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$ASSET" --dir "$existing"
+            (cd "$existing" && sha256sum -c "$CHECKSUM")
+            echo "ANDROID_SIGNING_INPUT_RELEASE=EXISTS_MATCH source=$PUBLIC_SHA"
+            exit 0
+          fi
+
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$PUBLIC_SHA" \
+            --title "Family Finance Android Signing Input ${PUBLIC_SHA:0:12}" \
+            --notes "Immutable aligned unsigned APK plus Android apksigner runtime for public source $PUBLIC_SHA. Contains no signing key, credentials or household data." \
+            "$ASSET" "$CHECKSUM"
+          echo "ANDROID_SIGNING_INPUT_RELEASE=PASS source=$PUBLIC_SHA"
