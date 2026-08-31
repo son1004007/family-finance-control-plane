@@ -48,6 +48,13 @@ jobs:
           unzip -q gradle.zip
           echo "$RUNNER_TEMP/gradle-8.10.2/bin" >> "$GITHUB_PATH"
 
+      - name: Run normalizer unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle -p android-notifier --no-daemon :app:testDebugUnitTest
+          echo 'ANDROID_NOTIFIER_UNIT_TESTS=PASS'
+
       - name: Build debug APK
         shell: bash
         run: |
