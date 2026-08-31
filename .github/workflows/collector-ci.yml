@@ -31,6 +31,7 @@ jobs:
             scripts/authorize_drive_appdata_collector.py \
             collector/family_finance_collector/config.py \
             collector/family_finance_collector/rules.py \
+            collector/family_finance_collector/reconciliation.py \
             collector/family_finance_collector/device_relay.py \
             collector/family_finance_collector/db.py \
             collector/family_finance_collector/gmail.py \
@@ -38,6 +39,7 @@ jobs:
             collector/family_finance_collector/main.py
           python3 tests/test_collector_rules.py
           python3 tests/test_drive_appdata_relay.py
+          python3 tests/test_transfer_reconciliation.py
           python3 -m json.tool config/collector.example.json >/dev/null
           grep -q '^google-api-python-client==2.198.0$' collector/requirements.txt
           grep -q '^google-auth-oauthlib==1.4.0$' collector/requirements-auth.txt
@@ -50,6 +52,8 @@ jobs:
           grep -q 'drive.appdata' scripts/authorize_drive_appdata_collector.py
           grep -q 'drive.appdata' collector/family_finance_collector/drive_appdata.py
           ! grep -R --line-number 'https://www.googleapis.com/auth/drive"' scripts/authorize_drive_appdata_collector.py collector/family_finance_collector/drive_appdata.py
+          grep -q 'bank_debit_wallet_charge_v1' collector/family_finance_collector/reconciliation.py
+          grep -q 'wallet_purchase' tests/test_transfer_reconciliation.py
 
       - name: Validate Compose network boundary
         shell: bash
