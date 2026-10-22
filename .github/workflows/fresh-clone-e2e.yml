@@ -1,9 +1,7 @@
 name: Fresh Clone E2E
 
+# FAMILY_FINANCE_AUTOMATION_PAUSED_2026_10_22: automatic triggers disabled; restore from Git history.
 on:
-  pull_request:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
