@@ -1,15 +1,7 @@
 name: Android Signing Input Release
 
+# FAMILY_FINANCE_AUTOMATION_PAUSED_2026_10_22: automatic triggers disabled; restore from Git history.
 on:
-  pull_request:
-    paths:
-      - 'android-notifier/**'
-      - '.github/workflows/android-signing-input-release.yml'
-  push:
-    branches: [main]
-    paths:
-      - 'android-notifier/**'
-      - '.github/workflows/android-signing-input-release.yml'
   workflow_dispatch:
 
 permissions:
