@@ -2,6 +2,11 @@
 
 Global control: son1004007/ai-agent-workflow-playbook/CONTROL.md
 
+## Project pause (owner decision, 2026-10-22)
+
+**PAUSED:** do not autonomously resume builds, releases, pull-request CI, deploys or data collection. All 13 public GitHub Actions workflows are manual-only on `main`. Read [PAUSED_STATE.md](PAUSED_STATE.md) before work. Preserve the implementation and repository history for a later explicit restart decision.
+
+
 ## Purpose
 
 This is the **public, reusable** implementation repository for Family Finance Control Plane.
