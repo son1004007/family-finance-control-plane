@@ -1,9 +1,7 @@
 name: Public boundary
 
+# FAMILY_FINANCE_AUTOMATION_PAUSED_2026_10_22: automatic triggers disabled; restore from Git history.
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
