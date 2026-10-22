@@ -1,14 +1,7 @@
 name: Runtime Bundle Release
 
+# FAMILY_FINANCE_AUTOMATION_PAUSED_2026_10_22: automatic triggers disabled; restore from Git history.
 on:
-  pull_request:
-    paths:
-      - 'mcp_server/**'
-      - 'collector/**'
-      - 'compose*.yaml'
-      - '.github/workflows/runtime-bundle-release.yml'
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
