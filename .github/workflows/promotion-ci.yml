@@ -1,0 +1,120 @@
+name: Promotion CI
+
+on:
+  pull_request:
+    paths:
+      - 'db/migrations/**'
+      - 'db/tests/assert_promotion_decisions.sql'
+      - '.github/workflows/promotion-ci.yml'
+      - 'docs/continuous-promotion.md'
+  push:
+    branches: [main]
+    paths:
+      - 'db/migrations/**'
+      - 'db/tests/assert_promotion_decisions.sql'
+      - '.github/workflows/promotion-ci.yml'
+      - 'docs/continuous-promotion.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  promotion-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      POSTGRES_DB: family_finance
+      POSTGRES_ADMIN_USER: finance_admin
+      POSTGRES_ADMIN_PASSWORD: ci-only-not-a-secret
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Start PostgreSQL 16
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose up -d db
+          for i in $(seq 1 30); do
+            if docker compose exec -T db pg_isready -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          docker compose ps
+          docker compose logs db
+          exit 1
+
+      - name: Apply migrations and synthetic household fixture
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh scripts/migrate_compose.sh
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/fixtures/synthetic_household.sql
+
+      - name: Verify deterministic promotion decisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(docker compose exec -T db psql -qAt -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "SELECT COUNT(*) FROM finance.transactions;")"
+          test "$before" = "4"
+
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            < db/tests/assert_promotion_decisions.sql
+
+          after="$(docker compose exec -T db psql -qAt -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "SELECT COUNT(*) FROM finance.transactions;")"
+          test "$after" = "$before"
+          echo 'PROMOTION_LEDGER_WRITE_BOUNDARY=PASS'
+
+      - name: Verify collector cannot read promotion decisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+              -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_collector; SELECT COUNT(*) FROM analytics.v_collection_promotion_decisions;"; then
+            echo '::error::finance_collector unexpectedly read promotion decisions'
+            exit 1
+          fi
+          echo 'PROMOTION_COLLECTOR_BOUNDARY=PASS'
+
+      - name: Verify MCP cannot read staging promotion decisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+              -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_mcp_reader; SELECT COUNT(*) FROM analytics.v_collection_promotion_decisions;"; then
+            echo '::error::finance_mcp_reader unexpectedly read staging promotion decisions'
+            exit 1
+          fi
+          echo 'PROMOTION_MCP_BOUNDARY=PASS'
+
+      - name: Verify local AI reader can inspect decisions read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+            -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+            -c "SET ROLE finance_ai_reader; SELECT promotion_decision, COUNT(*) FROM analytics.v_collection_promotion_decisions GROUP BY promotion_decision ORDER BY promotion_decision;"
+          if docker compose exec -T db psql -v ON_ERROR_STOP=1 \
+              -U "$POSTGRES_ADMIN_USER" -d "$POSTGRES_DB" \
+              -c "SET ROLE finance_ai_reader; UPDATE ingest.collection_observations SET promotion_status='promoted' WHERE false;"; then
+            echo '::error::finance_ai_reader unexpectedly mutated staging observations'
+            exit 1
+          fi
+          echo 'PROMOTION_AI_READONLY_BOUNDARY=PASS'
+
+      - name: Cleanup
+        if: always()
+        run: docker compose down -v
